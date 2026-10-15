@@ -1,0 +1,56 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Calcpad.App.App"
+             RequestedThemeVariant="Dark">
+
+  <Application.Styles>
+    <FluentTheme />
+
+    <Style Selector="Button.tool">
+      <Setter Property="Background" Value="#00000000" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="10,6" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Foreground" Value="#FFEDEDF0" />
+    </Style>
+    <Style Selector="Button.tool:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#22FFFFFF" />
+    </Style>
+    <Style Selector="Button.tool.active">
+      <Setter Property="Background" Value="#FFFF9F0A" />
+      <Setter Property="Foreground" Value="#FF101012" />
+    </Style>
+
+    <Style Selector="Button.accent">
+      <Setter Property="Background" Value="#FFFF9F0A" />
+      <Setter Property="Foreground" Value="#FF101012" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="14,7" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <Style Selector="TextBlock.h1">
+      <Setter Property="FontSize" Value="19" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="#FFF2F2F5" />
+    </Style>
+
+    <Style Selector="TextBlock.muted">
+      <Setter Property="Foreground" Value="#FF9A9AA0" />
+      <Setter Property="FontSize" Value="12" />
+    </Style>
+
+    <Style Selector="Border.card">
+      <Setter Property="Background" Value="#FF1C1C1E" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="Padding" Value="14" />
+    </Style>
+
+    <Style Selector="Border.chip">
+      <Setter Property="Background" Value="#FF2C2C2E" />
+      <Setter Property="CornerRadius" Value="999" />
+      <Setter Property="Padding" Value="10,4" />
+    </Style>
+  </Application.Styles>
+
+</Application>

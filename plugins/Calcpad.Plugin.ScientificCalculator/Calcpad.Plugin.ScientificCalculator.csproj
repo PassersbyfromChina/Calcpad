@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Calcpad.Plugin.ScientificCalculator</RootNamespace>
+    <AssemblyName>Calcpad.Plugin.ScientificCalculator</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <Description>iPad landscape scientific calculator widget for the Calcpad infinite canvas.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Calcpad.Plugin.Sdk\Calcpad.Plugin.Sdk.csproj" />
+  </ItemGroup>
+
+  <!-- The keypad state machine and the paint helpers are shared with the basic calculator by
+       compiling the same sources into this assembly; the plugins stay independently loadable. -->
+  <ItemGroup>
+    <Compile Include="..\Calcpad.Plugin.BasicCalculator\CalculatorKit.cs" Link="Shared\CalculatorKit.cs" />
+    <Compile Include="..\Calcpad.Plugin.BasicCalculator\CalculatorPaint.cs" Link="Shared\CalculatorPaint.cs" />
+  </ItemGroup>
+
+</Project>

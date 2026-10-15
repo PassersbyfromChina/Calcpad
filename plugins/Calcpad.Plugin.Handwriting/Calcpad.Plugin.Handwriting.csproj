@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Calcpad.Plugin.Handwriting</RootNamespace>
+    <AssemblyName>Calcpad.Plugin.Handwriting</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>Calcpad.Plugin.Handwriting</PackageId>
+    <Description>Handwriting to text for Calcpad: on-device stroke recognition with an optional cloud fallback that is always reviewed before upload.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Calcpad.Plugin.Sdk\Calcpad.Plugin.Sdk.csproj" />
+    <ProjectReference Include="..\..\src\Calcpad.Core\Calcpad.Core.csproj" />
+  </ItemGroup>
+
+</Project>

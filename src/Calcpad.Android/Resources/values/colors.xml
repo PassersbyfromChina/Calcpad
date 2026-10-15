@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <color name="calcpad_primary">#1E88E5</color>
+  <color name="calcpad_background">#FFFBFE</color>
+  <color name="calcpad_icon_background">#1E88E5</color>
+</resources>

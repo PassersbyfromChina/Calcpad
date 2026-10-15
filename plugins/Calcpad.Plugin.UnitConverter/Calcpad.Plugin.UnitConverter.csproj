@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Calcpad.Plugin.UnitConverter</RootNamespace>
+    <AssemblyName>Calcpad.Plugin.UnitConverter</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <Description>iPad style unit converter widget for the Calcpad infinite canvas.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Calcpad.Plugin.Sdk\Calcpad.Plugin.Sdk.csproj" />
+  </ItemGroup>
+
+</Project>

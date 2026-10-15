@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Calcpad.Android</RootNamespace>
+    <AssemblyName>Calcpad.Android</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+
+    <!-- Sideloadable APK signed with the debug keystore. -->
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <ApplicationId>com.passersbyfromchina.calcpad</ApplicationId>
+    <ApplicationTitle>Calcpad</ApplicationTitle>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationDisplayVersion>$(Version)</ApplicationDisplayVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Android" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Calcpad.App\Calcpad.App.csproj" />
+  </ItemGroup>
+
+</Project>

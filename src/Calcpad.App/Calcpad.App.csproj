@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Calcpad.App</RootNamespace>
+    <AssemblyName>Calcpad.App</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <!-- CS0436: CanvasDocumentRenderer is linked into the CanvasTools plugin so that plugin can
+         rasterise the canvas without taking a dependency on the shell assembly. The in-project
+         copy always wins. -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Calcpad.Core\Calcpad.Core.csproj" />
+    <ProjectReference Include="..\Calcpad.Plugin.Sdk\Calcpad.Plugin.Sdk.csproj" />
+  </ItemGroup>
+
+  <!--
+    Built-in plugins. They are ordinary IPlugin implementations assembled into the product; the
+    plugin host treats them exactly like plugins loaded from disk, so disabling one removes its
+    menu items, shortcuts, panel and canvas widgets.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\plugins\Calcpad.Plugin.CanvasTools\Calcpad.Plugin.CanvasTools.csproj" />
+    <ProjectReference Include="..\..\plugins\Calcpad.Plugin.BasicCalculator\Calcpad.Plugin.BasicCalculator.csproj" />
+    <ProjectReference Include="..\..\plugins\Calcpad.Plugin.ScientificCalculator\Calcpad.Plugin.ScientificCalculator.csproj" />
+    <ProjectReference Include="..\..\plugins\Calcpad.Plugin.UnitConverter\Calcpad.Plugin.UnitConverter.csproj" />
+    <ProjectReference Include="..\..\plugins\Calcpad.Plugin.MathNotes\Calcpad.Plugin.MathNotes.csproj" />
+    <ProjectReference Include="..\..\plugins\Calcpad.Plugin.History\Calcpad.Plugin.History.csproj" />
+    <ProjectReference Include="..\..\plugins\Calcpad.Plugin.Handwriting\Calcpad.Plugin.Handwriting.csproj" />
+    <ProjectReference Include="..\..\plugins\Calcpad.Plugin.AskAi\Calcpad.Plugin.AskAi.csproj" />
+  </ItemGroup>
+
+</Project>

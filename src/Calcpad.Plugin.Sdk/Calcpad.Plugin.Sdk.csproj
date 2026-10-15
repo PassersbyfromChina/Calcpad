@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Calcpad.Plugin.Sdk</RootNamespace>
+    <AssemblyName>Calcpad.Plugin.Sdk</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>Calcpad.Plugin.Sdk</PackageId>
+    <Description>SDK for writing Calcpad plugins: canvas widgets, panels, menu and shortcut contributions.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Calcpad.Core\Calcpad.Core.csproj" />
+  </ItemGroup>
+
+</Project>

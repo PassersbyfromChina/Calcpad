@@ -1,0 +1,30 @@
+# Calcpad build artifacts
+artifacts/
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.idea/
+*.binlog
+
+# Local tooling / toolchain (never part of the repository)
+.tools/
+_toolchain/
+android-sdk/
+local-packages/
+
+# Local secrets and machine specific settings
+*.local.json
+secrets.json
+appsettings.local.json
+
+# Tests are intentionally kept out of the published repository
+tests/
+**/tests/
+*.Tests/
+
+# Prompt / design scratch material is intentionally kept out of the repository
+prompts/
+docs/prompts/
+scratch/

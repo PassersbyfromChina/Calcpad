@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>Calcpad.Plugin.MathNotes</RootNamespace>
+    <AssemblyName>Calcpad.Plugin.MathNotes</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <Description>Multi line math notes with live evaluation and function plotting for the Calcpad canvas.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Calcpad.Plugin.Sdk\Calcpad.Plugin.Sdk.csproj" />
+  </ItemGroup>
+
+</Project>

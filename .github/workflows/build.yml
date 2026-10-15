@@ -1,0 +1,127 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
+jobs:
+  desktop:
+    name: desktop ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: windows-latest
+            rid: win-arm64
+          - os: ubuntu-latest
+            rid: linux-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      # The version lives in Directory.Build.props and is never duplicated in the workflow.
+      - name: Read product version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content -Raw Directory.Build.props
+          $version = $props.Project.PropertyGroup.Version
+          if ([string]::IsNullOrWhiteSpace($version)) { $version = '0.0.0' }
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Calcpad version: $version"
+
+      - name: Restore
+        run: dotnet restore src/Calcpad.Desktop/Calcpad.Desktop.csproj -r ${{ matrix.rid }}
+
+      # The repository intentionally contains no test projects, so CI builds instead of testing.
+      - name: Build (Release)
+        run: dotnet build src/Calcpad.Desktop/Calcpad.Desktop.csproj -c Release -r ${{ matrix.rid }} --no-restore -p:Version=${{ steps.version.outputs.value }}
+
+      - name: Publish (Release)
+        run: >
+          dotnet publish src/Calcpad.Desktop/Calcpad.Desktop.csproj
+          -c Release -r ${{ matrix.rid }} --self-contained false --no-restore
+          -p:Version=${{ steps.version.outputs.value }}
+          -o artifacts/${{ matrix.rid }}
+
+      - name: List artifacts
+        shell: pwsh
+        run: Get-ChildItem -Recurse artifacts/${{ matrix.rid }} | Select-Object FullName, Length
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: calcpad-${{ matrix.rid }}-${{ steps.version.outputs.value }}
+          path: artifacts/${{ matrix.rid }}/**
+          if-no-files-found: error
+
+  android:
+    name: android apk
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android workload
+        run: dotnet workload install android
+
+      - name: Read product version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content -Raw Directory.Build.props
+          $version = $props.Project.PropertyGroup.Version
+          if ([string]::IsNullOrWhiteSpace($version)) { $version = '0.0.0' }
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Calcpad version: $version"
+
+      - name: Build APK (Release)
+        run: >
+          dotnet build src/Calcpad.Android/Calcpad.Android.csproj
+          -c Release -f net9.0-android
+          -p:Version=${{ steps.version.outputs.value }}
+          -p:JavaSdkDirectory="$env:JAVA_HOME"
+
+      - name: Collect APK
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/android | Out-Null
+          $apk = Get-ChildItem -Path src/Calcpad.Android/bin/Release -Filter *.apk -Recurse |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -eq $apk) { throw 'No APK was produced.' }
+          $target = "artifacts/android/Calcpad-${{ steps.version.outputs.value }}-$($apk.Name)"
+          Copy-Item $apk.FullName $target
+          Get-Item $target | Select-Object FullName, Length
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: calcpad-android-${{ steps.version.outputs.value }}
+          path: artifacts/android/*.apk
+          if-no-files-found: error
