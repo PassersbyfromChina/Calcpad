@@ -7,9 +7,19 @@
 An infinite-canvas, plugin-driven calculator that brings the iPad Calculator experience to
 **Android, Windows x64 and Windows on Arm**.
 
-关键词 / Keywords: `calculator` `infinite canvas` `plugin architecture` `handwriting recognition`
-`OCR` `Chinese handwriting` `on-device AI` `ONNX` `Avalonia` `Android` `Windows Arm64` `Math Notes`
-`unit converter` `permission model` `privacy` `计算器` `无限画布` `插件` `手写识别` `中英文` `本地 AI` `授权`
+## 下载 / Download
+
+**[→ 打开下载页（自动识别你的平台）](https://passersbyfromchina.github.io/Calcpad/)**
+
+| 平台 | 文件 |
+| --- | --- |
+| Windows x64 | [`Calcpad-win-x64.exe`](https://github.com/PassersbyfromChina/Calcpad/releases/latest/download/Calcpad-win-x64.exe) |
+| Windows on Arm | [`Calcpad-win-arm64.exe`](https://github.com/PassersbyfromChina/Calcpad/releases/latest/download/Calcpad-win-arm64.exe) |
+| Android | [`Calcpad-android.apk`](https://github.com/PassersbyfromChina/Calcpad/releases/latest/download/Calcpad-android.apk) |
+
+Windows 版是**框架依赖**的单文件程序，运行前需要
+[.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)。
+全部版本见 [Releases](https://github.com/PassersbyfromChina/Calcpad/releases)。
 
 ---
 
