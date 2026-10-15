@@ -97,6 +97,15 @@ public static class NumberFormatter
         }
 
         var span = text.Trim();
+
+        // Currencies are printed before the number, so "$27" has to round-trip.
+        var prefix = string.Empty;
+        if (span.Length > 1 && span[0] is '$' or '€' or '£' or '¥' or '₩' or '₹')
+        {
+            prefix = span[0].ToString();
+            span = span[1..].Trim();
+        }
+
         var end = 0;
         while (end < span.Length && (char.IsDigit(span[end]) || span[end] is '+' or '-' or '.' or 'e' or 'E'
             || ((span[end] == '+' || span[end] == '-') && end > 0 && (span[end - 1] is 'e' or 'E'))))
@@ -109,7 +118,7 @@ public static class NumberFormatter
             return false;
         }
 
-        unit = span[end..].Trim();
+        unit = prefix.Length > 0 ? prefix : span[end..].Trim();
         return true;
     }
 

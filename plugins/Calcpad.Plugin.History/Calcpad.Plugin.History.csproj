@@ -12,4 +12,11 @@
     <ProjectReference Include="..\..\src\Calcpad.Plugin.Sdk\Calcpad.Plugin.Sdk.csproj" />
   </ItemGroup>
 
+  <!-- Shared calculator kit: the history widget refills the calculator and copies through the same
+       clipboard contract, so it compiles the same sources instead of duplicating command ids. -->
+  <ItemGroup>
+    <Compile Include="..\Calcpad.Plugin.BasicCalculator\*.cs" LinkBase="Shared\CalculatorKit"
+             Exclude="..\Calcpad.Plugin.BasicCalculator\BasicCalculatorPlugin.cs;..\Calcpad.Plugin.BasicCalculator\BasicCalculatorWidget.cs;..\Calcpad.Plugin.BasicCalculator\CalculatorSurfaceWidget.cs" />
+  </ItemGroup>
+
 </Project>

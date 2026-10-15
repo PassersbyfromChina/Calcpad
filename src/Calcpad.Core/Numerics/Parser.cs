@@ -51,6 +51,12 @@ internal sealed class Parser
                 break;
             }
 
+            // Math Notes allows several statements on one line separated by spaces: "a = 1 a = a + 1".
+            if (Current.Kind == TokenKind.Identifier && Peek().Kind == TokenKind.Assign)
+            {
+                continue;
+            }
+
             if (Current.Kind == TokenKind.RightParen)
             {
                 throw new CalcException(Errors.UnbalancedParen);
@@ -74,20 +80,59 @@ internal sealed class Parser
             var name = Advance().Text;
             _index++; // '='
             var value = ParseConvert();
+
+            // "面积 = 宽 * 高 = " assigns and shows the value at the same time: the trailing '=' is a
+            // display marker rather than another operator.
+            if (Current.Kind == TokenKind.Assign)
+            {
+                _index++;
+            }
+
             return new AssignNode(name, value);
         }
 
-        return ParseConvert();
+        var expression = ParseConvert();
+        if (Current.Kind == TokenKind.Assign)
+        {
+            // A bare "2 + 3 =" line simply shows its value.
+            _index++;
+        }
+
+        return expression;
     }
 
     private Node ParseConvert()
     {
-        var node = ParseAdditive();
+        var node = ParseBitwiseOr();
         while (Current.Kind == TokenKind.Convert)
         {
             _index++;
-            var target = ParseAdditive();
+            var target = ParseBitwiseOr();
             node = new ConvertNode(node, target);
+        }
+
+        return node;
+    }
+
+    private Node ParseBitwiseOr()
+    {
+        var node = ParseBitwiseAnd();
+        while (Current.IsOperator("|"))
+        {
+            _index++;
+            node = new BinaryNode("|", node, ParseBitwiseAnd());
+        }
+
+        return node;
+    }
+
+    private Node ParseBitwiseAnd()
+    {
+        var node = ParseAdditive();
+        while (Current.IsOperator("&"))
+        {
+            _index++;
+            node = new BinaryNode("&", node, ParseAdditive());
         }
 
         return node;

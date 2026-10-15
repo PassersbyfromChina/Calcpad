@@ -113,6 +113,18 @@ public sealed class UiRegistry : IUiRegistry
 
         public void Invalidate() => _owner.Invalidate();
 
+        public IWidgetHost? ForPlugin(string pluginId)
+        {
+            if (string.IsNullOrWhiteSpace(pluginId))
+            {
+                return null;
+            }
+
+            return string.Equals(pluginId, PluginId, StringComparison.Ordinal)
+                ? this
+                : _owner.CreateWidgetHost(pluginId);
+        }
+
         public void RequestFocus(string? focusKey) => FocusedKey = focusKey;
     }
 }

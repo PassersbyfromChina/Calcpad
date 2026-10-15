@@ -51,6 +51,7 @@ public sealed class HistoryPlugin : IPlugin
             PermissionKind.CanvasWrite,
             PermissionKind.DatabaseRead,
             PermissionKind.DatabaseWrite,
+            PermissionKind.ClipboardWrite,
             PermissionKind.ShellIntegration
         ],
         Menus =
@@ -63,6 +64,13 @@ public sealed class HistoryPlugin : IPlugin
         [
             new ShortcutContribution("Ctrl+5", PanelCommandId, "Show history", null, "显示历史记录"),
             new ShortcutContribution("Ctrl+Shift+5", InsertCommandId, "Insert history list", null, "插入历史记录")
+        ],
+        Commands =
+        [
+            // Called by the calculators when they record a calculation; the clear command is in a
+            // menu, but declaring it here keeps the routing table explicit.
+            AppendCommandId,
+            ClearCommandId
         ],
         Panels =
         [
@@ -87,15 +95,47 @@ public sealed class HistoryPlugin : IPlugin
     {
         _context = context;
         Store = new HistoryStore(context.Data);
-        _renderer = new HistoryWidget(Store);
+        _renderer = new HistoryWidget(Store)
+        {
+            Clipboard = (text, _) => WriteClipboardAsync(context, text)
+        };
         if (context is IPluginUiContext ui)
         {
             ui.Ui.RegisterWidget(_renderer);
             ui.Ui.RegisterPanel(PanelId, () => BuildPanel(context));
         }
 
-        context.Log.Info("History ready (历史记录已就绪)");
+        context.Log.Info("History ready with copy, swipe delete, multi select and refill (历史记录已就绪)");
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// Copies text through the permission gated clipboard API. The user is asked once; a refusal or
+    /// a platform failure is reported so the widget can say "clipboard unavailable" instead of
+    /// pretending the copy worked.
+    /// </summary>
+    private async ValueTask<Plugins.CalculatorKit.ClipboardOutcome> WriteClipboardAsync(IPluginContext context, string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return Plugins.CalculatorKit.ClipboardOutcome.Empty;
+        }
+
+        try
+        {
+            await context.Clipboard.SetTextAsync(text).ConfigureAwait(false);
+            return Plugins.CalculatorKit.ClipboardOutcome.Copied;
+        }
+        catch (PermissionDeniedException)
+        {
+            context.Log.Warn("Clipboard permission denied");
+            return Plugins.CalculatorKit.ClipboardOutcome.Denied;
+        }
+        catch (Exception ex)
+        {
+            context.Log.Warn("Clipboard write failed", ex);
+            return Plugins.CalculatorKit.ClipboardOutcome.Unavailable;
+        }
     }
 
     /// <inheritdoc />

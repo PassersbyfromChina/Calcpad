@@ -12,4 +12,12 @@
     <ProjectReference Include="..\..\src\Calcpad.Plugin.Sdk\Calcpad.Plugin.Sdk.csproj" />
   </ItemGroup>
 
+  <!-- Shared calculator sources: the convert mode, the calculator surface factory and the currency
+       rate table are the same code as the calculator plugin, compiled into this assembly so the
+       converter and the calculator can never drift apart. -->
+  <ItemGroup>
+    <Compile Include="..\Calcpad.Plugin.BasicCalculator\*.cs" LinkBase="Shared\CalculatorKit"
+             Exclude="..\Calcpad.Plugin.BasicCalculator\BasicCalculatorPlugin.cs;..\Calcpad.Plugin.BasicCalculator\BasicCalculatorWidget.cs;..\Calcpad.Plugin.BasicCalculator\CalculatorSurfaceWidget.cs" />
+  </ItemGroup>
+
 </Project>

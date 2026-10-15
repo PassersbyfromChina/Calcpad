@@ -11,7 +11,14 @@ public readonly struct Dimension : IEquatable<Dimension>
     private const double Epsilon = 1e-9;
 
     /// <summary>Creates a dimension vector, normalising values that are numerically zero.</summary>
-    public Dimension(double length, double mass, double time, double temperature, double data, double angle)
+    public Dimension(
+        double length,
+        double mass,
+        double time,
+        double temperature,
+        double data,
+        double angle,
+        double currency = 0)
     {
         Length = Snap(length);
         Mass = Snap(mass);
@@ -19,6 +26,7 @@ public readonly struct Dimension : IEquatable<Dimension>
         Temperature = Snap(temperature);
         Data = Snap(data);
         Angle = Snap(angle);
+        Currency = Snap(currency);
     }
 
     /// <summary>Exponent of the length dimension.</summary>
@@ -38,6 +46,9 @@ public readonly struct Dimension : IEquatable<Dimension>
 
     /// <summary>Exponent of the plane angle dimension.</summary>
     public double Angle { get; }
+
+    /// <summary>Exponent of the currency dimension.</summary>
+    public double Currency { get; }
 
     /// <summary>The dimensionless vector.</summary>
     public static Dimension None => default;
@@ -60,9 +71,12 @@ public readonly struct Dimension : IEquatable<Dimension>
     /// <summary>Plane angle.</summary>
     public static Dimension OfAngle => new(0, 0, 0, 0, 0, 1);
 
+    /// <summary>Currency.</summary>
+    public static Dimension OfCurrency => new(0, 0, 0, 0, 0, 0, 1);
+
     /// <summary>True when every exponent is zero, i.e. the value is a plain number.</summary>
     public bool IsZero =>
-        Length == 0 && Mass == 0 && Time == 0 && Temperature == 0 && Data == 0 && Angle == 0;
+        Length == 0 && Mass == 0 && Time == 0 && Temperature == 0 && Data == 0 && Angle == 0 && Currency == 0;
 
     /// <summary>Adds two dimension vectors (multiplication of the quantities).</summary>
     public Dimension Add(Dimension other) => new(
@@ -71,7 +85,8 @@ public readonly struct Dimension : IEquatable<Dimension>
         Time + other.Time,
         Temperature + other.Temperature,
         Data + other.Data,
-        Angle + other.Angle);
+        Angle + other.Angle,
+        Currency + other.Currency);
 
     /// <summary>Subtracts two dimension vectors (division of the quantities).</summary>
     public Dimension Subtract(Dimension other) => new(
@@ -80,7 +95,8 @@ public readonly struct Dimension : IEquatable<Dimension>
         Time - other.Time,
         Temperature - other.Temperature,
         Data - other.Data,
-        Angle - other.Angle);
+        Angle - other.Angle,
+        Currency - other.Currency);
 
     /// <summary>Scales every exponent, used by powers and roots.</summary>
     public Dimension Scale(double factor) => new(
@@ -89,11 +105,12 @@ public readonly struct Dimension : IEquatable<Dimension>
         Time * factor,
         Temperature * factor,
         Data * factor,
-        Angle * factor);
+        Angle * factor,
+        Currency * factor);
 
     /// <summary>True when every exponent is a whole number, i.e. the dimension can be printed as a unit.</summary>
     public bool IsIntegral => IsWhole(Length) && IsWhole(Mass) && IsWhole(Time)
-        && IsWhole(Temperature) && IsWhole(Data) && IsWhole(Angle);
+        && IsWhole(Temperature) && IsWhole(Data) && IsWhole(Angle) && IsWhole(Currency);
 
     /// <inheritdoc />
     public bool Equals(Dimension other) =>
@@ -102,14 +119,16 @@ public readonly struct Dimension : IEquatable<Dimension>
         Math.Abs(Time - other.Time) < Epsilon &&
         Math.Abs(Temperature - other.Temperature) < Epsilon &&
         Math.Abs(Data - other.Data) < Epsilon &&
-        Math.Abs(Angle - other.Angle) < Epsilon;
+        Math.Abs(Angle - other.Angle) < Epsilon &&
+        Math.Abs(Currency - other.Currency) < Epsilon;
 
     /// <inheritdoc />
     public override bool Equals(object? obj) => obj is Dimension other && Equals(other);
 
     /// <inheritdoc />
     public override int GetHashCode() => HashCode.Combine(
-        Quantize(Length), Quantize(Mass), Quantize(Time), Quantize(Temperature), Quantize(Data), Quantize(Angle));
+        Quantize(Length), Quantize(Mass), Quantize(Time), Quantize(Temperature), Quantize(Data),
+        Quantize(Angle), Quantize(Currency));
 
     /// <summary>Equality operator.</summary>
     public static bool operator ==(Dimension left, Dimension right) => left.Equals(right);
@@ -127,6 +146,7 @@ public readonly struct Dimension : IEquatable<Dimension>
         Append(parts, "Θ", Temperature);
         Append(parts, "D", Data);
         Append(parts, "A", Angle);
+        Append(parts, "¤", Currency);
         return parts.Count == 0 ? "1" : string.Join("·", parts);
 
         static void Append(List<string> target, string symbol, double exponent)
@@ -160,13 +180,20 @@ public sealed class UnitExpr
 {
     private readonly (string Symbol, double Exponent)[] _terms;
 
-    private UnitExpr(Dimension dimension, double factor, double offset, (string, double)[] terms, string symbol)
+    private UnitExpr(
+        Dimension dimension,
+        double factor,
+        double offset,
+        (string, double)[] terms,
+        string symbol,
+        bool prefixSymbol = false)
     {
         Dimension = dimension;
         Factor = factor;
         Offset = offset;
         _terms = terms;
         Symbol = symbol;
+        PrefixSymbol = prefixSymbol;
     }
 
     /// <summary>Physical dimension of the value.</summary>
@@ -190,12 +217,18 @@ public sealed class UnitExpr
     /// <summary>Printed unit symbol, for example <c>m</c>, <c>cm</c>, <c>m/s</c> or <c>m^2</c>.</summary>
     public string Symbol { get; }
 
+    /// <summary>
+    /// True when the symbol is written before the number, as currencies are: <c>$27</c> rather than
+    /// <c>27 $</c>.
+    /// </summary>
+    public bool PrefixSymbol { get; }
+
     /// <summary>The unit of a plain number.</summary>
     public static UnitExpr None { get; } = new(Dimension.None, 1, 0, [], string.Empty);
 
     /// <summary>Builds the unit expression of a single catalogue unit.</summary>
-    public static UnitExpr FromUnit(UnitInfo unit, Dimension dimension) =>
-        new(dimension, unit.Factor, unit.Offset, [(unit.Symbol, 1d)], unit.Symbol);
+    public static UnitExpr FromUnit(UnitInfo unit, Dimension dimension, bool prefixSymbol = false) =>
+        new(dimension, unit.Factor, unit.Offset, [(unit.Symbol, 1d)], unit.Symbol, prefixSymbol);
 
     /// <summary>Multiplies two units; affine units are rejected.</summary>
     public static UnitExpr Multiply(UnitExpr left, UnitExpr right)

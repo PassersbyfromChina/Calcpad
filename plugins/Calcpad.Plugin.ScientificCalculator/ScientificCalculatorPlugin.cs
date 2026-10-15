@@ -4,16 +4,18 @@ using Calcpad.Core.Canvas;
 using Calcpad.Core.Plugins;
 using Calcpad.Core.Security;
 using Calcpad.Plugin.Sdk.Ui;
+using Calcpad.Plugins.CalculatorKit;
 
 namespace Calcpad.Plugin.ScientificCalculator;
 
 /// <summary>
-/// The built in scientific calculator. It contributes the iPad landscape scientific keypad as a
-/// canvas widget with the <c>Ctrl+2</c> shortcut and a matching side panel.
+/// The scientific keypad. Since iPadOS 18 the scientific pad is a mode of the one calculator, so this
+/// plugin's insert command places the shared calculator surface and switches it to Scientific; the
+/// legacy scientific-only widget type stays registered so older documents keep rendering.
 /// </summary>
 public sealed class ScientificCalculatorPlugin : IPlugin
 {
-    /// <summary>Command that places a scientific calculator widget on the canvas.</summary>
+    /// <summary>Command that places the calculator surface in scientific mode.</summary>
     public const string InsertCommandId = "calcpad.scientific.calculator.insert";
 
     /// <summary>Command that opens the scientific calculator panel.</summary>
@@ -22,7 +24,7 @@ public sealed class ScientificCalculatorPlugin : IPlugin
     /// <summary>Panel id contributed by this plugin.</summary>
     public const string PanelId = "calcpad.scientific.calculator.panel";
 
-    /// <summary>Widget type contributed by this plugin.</summary>
+    /// <summary>Legacy scientific-only widget type; the surface is the current path.</summary>
     public const string WidgetTypeId = "calcpad.calculator.scientific";
 
     private IPluginContext? _context;
@@ -33,28 +35,24 @@ public sealed class ScientificCalculatorPlugin : IPlugin
         Id = "calcpad.scientific.calculator",
         Name = "Scientific Calculator",
         Version = "0.0.0",
-        Description = "iPad landscape scientific calculator with 2nd, trigonometry, logs and roots. 画布上的科学计算器。",
+        Description = "Scientific mode of the calculator surface: 2nd, trigonometry, logs, roots, constants and the MC/M+/M−/MR memory keys. 计算器的科学模式。",
         Icon = "calculator-scientific",
         IsCore = true,
         EnabledByDefault = true,
-        Keywords = ["calculator", "scientific", "trigonometry", "科学计算器", "三角函数", "2nd"],
+        Keywords = ["calculator", "scientific", "trigonometry", "memory", "科学计算器", "三角函数", "2nd", "内存"],
         Permissions = [PermissionKind.CanvasRead, PermissionKind.CanvasWrite, PermissionKind.ShellIntegration],
         Menus =
         [
-            new MenuContribution("Insert/Calculator", "Scientific Calculator", InsertCommandId, "Ctrl+2", "calculator-scientific", 110, false, true, "科学计算器"),
+            new MenuContribution("Insert/Calculator", "Scientific (calculator mode)", InsertCommandId, "Ctrl+2", "calculator-scientific", 110, false, true, "科学模式"),
             new MenuContribution("View/Panels", "Scientific Calculator", PanelCommandId, null, "calculator-scientific", 110, false, false, "科学计算器面板")
         ],
         Shortcuts =
         [
-            new ShortcutContribution("Ctrl+2", InsertCommandId, "Insert scientific calculator", null, "插入科学计算器")
+            new ShortcutContribution("Ctrl+2", InsertCommandId, "Insert calculator in scientific mode", null, "插入科学模式计算器")
         ],
         Panels =
         [
             new PanelContribution(PanelId, "Scientific Calculator", PanelCommandId, PanelPlacement.Right, 110, 340, "科学计算器")
-        ],
-        Widgets =
-        [
-            new WidgetContribution(WidgetTypeId, "Scientific Calculator", InsertCommandId, 760, 420, "科学计算器")
         ]
     };
 
@@ -91,8 +89,17 @@ public sealed class ScientificCalculatorPlugin : IPlugin
             _ => ValueTask.CompletedTask
         };
 
-    /// <summary>Creates and attaches a widget object, ready to be added to the canvas.</summary>
+    /// <summary>Creates the shared calculator surface switched to scientific mode.</summary>
     public WidgetObject CreateWidget()
+    {
+        var camera = _context?.Canvas.Camera;
+        var size = CalculatorSurfaceFactory.DefaultSize(CalculatorMode.Scientific);
+        var bounds = new CRect((camera?.OffsetX ?? 0) + 160, (camera?.OffsetY ?? 0) + 160, size.Width, size.Height);
+        return CalculatorSurfaceFactory.CreateWidget(CalculatorMode.Scientific, ownerPluginId: Manifest.Id, bounds: bounds);
+    }
+
+    /// <summary>Creates the legacy scientific-only widget; kept for documents written before the surface.</summary>
+    public WidgetObject CreateLegacyWidget()
     {
         var camera = _context?.Canvas.Camera;
         var widget = new WidgetObject
@@ -120,7 +127,7 @@ public sealed class ScientificCalculatorPlugin : IPlugin
             var id = await plugin.Canvas.AddAsync(widget, ct).ConfigureAwait(false);
             await plugin.Canvas.RevealAsync(widget.Bounds, ct).ConfigureAwait(false);
             await plugin.Canvas.SetSelectionAsync([id], ct).ConfigureAwait(false);
-            plugin.Log.Info($"Scientific calculator inserted ({command.Trigger})");
+            plugin.Log.Info($"Calculator inserted in Scientific mode ({command.Trigger})");
         }
         catch (Exception ex)
         {

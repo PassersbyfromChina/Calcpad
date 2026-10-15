@@ -27,6 +27,14 @@ public interface IWidgetHost
     void RequestFocus(string? focusKey);
 
     string? FocusedKey { get; }
+
+    /// <summary>
+    /// Host for another plugin, used when a widget embeds that plugin's surface. Crucially the
+    /// returned host carries the <em>other</em> plugin's identity, so the embedded surface runs with
+    /// its own grants instead of borrowing the embedder's permissions. Returns null when no such
+    /// plugin is enabled; the default keeps every existing host implementation compiling.
+    /// </summary>
+    IWidgetHost? ForPlugin(string pluginId) => null;
 }
 
 public sealed class WidgetMeasureContext

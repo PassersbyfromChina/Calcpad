@@ -55,7 +55,10 @@ public enum CalculatorKeyKind
     Exponent,
 
     /// <summary>A two argument operator typed as a prefix, for example nCr.</summary>
-    Prefix
+    Prefix,
+
+    /// <summary>Page toggle of a paged (narrow) keypad. Handled by the surface, not by the state machine.</summary>
+    Page
 }
 
 /// <summary>
@@ -201,6 +204,43 @@ public static class KeypadGeometry
     public static bool IsRound(CalculatorKey key, CRect rect, bool roundKeypad) =>
         roundKeypad && key.RowSpan == 1 && key.ColumnSpan == 1 && rect.Width > 0;
 
+    /// <summary>
+    /// Rectangle of one key inside an explicit keypad area. Used by the calculator surface, whose
+    /// display, memory row and convert rows sit above the keypad.
+    /// </summary>
+    public static CRect RectIn(CRect area, CalculatorKey key, int rows, int columns, double gap)
+    {
+        var columns1 = Math.Max(1, columns);
+        var rows1 = Math.Max(1, rows);
+        var cellWidth = Math.Max(1, (area.Width - (gap * (columns1 - 1))) / columns1);
+        var cellHeight = Math.Max(1, (area.Height - (gap * (rows1 - 1))) / rows1);
+        var x = area.X + (key.Column * (cellWidth + gap));
+        var y = area.Y + (key.Row * (cellHeight + gap));
+        var width = (cellWidth * key.ColumnSpan) + (gap * (key.ColumnSpan - 1));
+        var height = (cellHeight * key.RowSpan) + (gap * (key.RowSpan - 1));
+        return new CRect(x, y, width, height);
+    }
+
+    /// <summary>Finds the key under a point inside an explicit keypad area.</summary>
+    public static CalculatorKey? HitTestIn(
+        IReadOnlyList<CalculatorKey> keys,
+        CRect area,
+        int rows,
+        int columns,
+        CPoint point,
+        double gap)
+    {
+        foreach (var key in keys)
+        {
+            if (RectIn(area, key, rows, columns, gap).Contains(point))
+            {
+                return key;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Finds the key under a point, using a circle test for round keys and a rectangle test otherwise.</summary>
     public static CalculatorKey? HitTest(
         IReadOnlyList<CalculatorKey> keys,
@@ -286,6 +326,18 @@ public sealed class CalculatorState
 
     /// <summary>Hint shown under the display, for example the history confirmation.</summary>
     public string Hint { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Scientific memory register, shared by every mode of the calculator surface. It survives AC
+    /// and only MC clears it, exactly like a desk calculator.
+    /// </summary>
+    public double Memory { get; set; }
+
+    /// <summary>True when the memory register holds a value; MR is highlighted in that case.</summary>
+    public bool HasMemory => double.IsFinite(Memory) && Math.Abs(Memory) > 1e-12;
+
+    /// <summary>Formatted memory value, for the indicator next to the memory keys.</summary>
+    public string MemoryText => HasMemory ? NumberFormatter.Format(Memory, Precision) : "0";
 
     /// <summary>Label of the clear key: <c>C</c> while there is something to clear, otherwise <c>AC</c>.</summary>
     public string ClearLabel => IsError || (Entry.Length == 0 && !JustEvaluated) ? "AC" : "C";
@@ -398,6 +450,9 @@ public sealed class CalculatorState
                 break;
             case CalculatorKeyKind.Prefix:
                 ApplyPrefix(SecondActive ? key.Secondary ?? key.Primary ?? key.Label : key.Primary ?? key.Label);
+                break;
+            case CalculatorKeyKind.Page:
+                // Paging belongs to the surface widget, not to the expression state.
                 break;
         }
     }
@@ -538,7 +593,11 @@ public sealed class CalculatorState
         return -1;
     }
 
-    /// <summary>Toggles the sign of the value on screen.</summary>
+    /// <summary>
+    /// Sign change. A plain number is wrapped as <c>(-9)</c> so the negation stays visible and can be
+    /// edited character by character, exactly like the iPad keypad; a richer expression is wrapped
+    /// whole as <c>-(…)</c>. Pressing it again unwraps.
+    /// </summary>
     public void ToggleSign()
     {
         if (IsError)
@@ -548,13 +607,198 @@ public sealed class CalculatorState
 
         if (Entry.Length == 0)
         {
-            Entry = JustEvaluated && LastResult.Length > 0 ? Negate(LastResult) : "-";
-            JustEvaluated = false;
+            if (JustEvaluated && LastResult.Length > 0)
+            {
+                Entry = ToggleWrapped(LastResult);
+                JustEvaluated = false;
+                return;
+            }
+
+            Entry = "(-";
             return;
         }
 
-        Entry = Entry.StartsWith('-') ? Entry[1..] : Negate(Entry);
+        Entry = ToggleWrapped(Entry);
     }
+
+    /// <summary>Wraps a value in <c>(-…)</c>, or unwraps it again when it already is negated.</summary>
+    public static string ToggleWrapped(string text)
+    {
+        var trimmed = (text ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            return "(-";
+        }
+
+        // While a group is still open there is nothing sensible to wrap, so the sign is toggled on
+        // the text as typed and stays reversible.
+        if (!IsBalanced(trimmed))
+        {
+            return trimmed.StartsWith('-') ? trimmed[1..] : "-" + trimmed;
+        }
+
+        if (trimmed.StartsWith("(-", StringComparison.Ordinal) && trimmed.EndsWith(')') && IsPlainNumber(trimmed[2..^1]))
+        {
+            return trimmed[2..^1];
+        }
+
+        if (trimmed.StartsWith("-(", StringComparison.Ordinal) && trimmed.EndsWith(')'))
+        {
+            return trimmed[1..];
+        }
+
+        if (IsPlainNumber(trimmed))
+        {
+            return trimmed.StartsWith('-') ? $"(-{trimmed[1..]})" : $"(-{trimmed})";
+        }
+
+        // A group or a whole expression: negate it as written, keeping the text readable.
+        return trimmed.StartsWith('(') && trimmed.EndsWith(')') ? "-" + trimmed : $"-({trimmed})";
+    }
+
+    /// <summary>True when every parenthesis in the text is closed.</summary>
+    public static bool IsBalanced(string text)
+    {
+        var depth = 0;
+        foreach (var c in text ?? string.Empty)
+        {
+            if (c == '(')
+            {
+                depth++;
+            }
+            else if (c == ')')
+            {
+                depth--;
+                if (depth < 0)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return depth == 0;
+    }
+
+    /// <summary>Value the memory keys operate on: whatever is on screen right now.</summary>
+    public double CurrentValue()
+    {
+        if (Entry.Length > 0 && EvaluateNumber(Entry) is { } entryValue)
+        {
+            return entryValue;
+        }
+
+        if (LastResult.Length > 0 && EvaluateNumber(LastResult) is { } resultValue)
+        {
+            return resultValue;
+        }
+
+        return 0;
+    }
+
+    /// <summary>M+ : adds the value on screen to the memory register.</summary>
+    public void MemoryAdd()
+    {
+        Memory = Finite(Memory + CurrentValue());
+        Hint = $"M+ {MemoryText}";
+    }
+
+    /// <summary>M− : subtracts the value on screen from the memory register.</summary>
+    public void MemorySubtract()
+    {
+        Memory = Finite(Memory - CurrentValue());
+        Hint = $"M− {MemoryText}";
+    }
+
+    /// <summary>MC : clears the memory register. AC deliberately keeps the memory.</summary>
+    public void MemoryClear()
+    {
+        Memory = 0;
+        Hint = "MC";
+    }
+
+    /// <summary>MR : recalls the memory value into the expression being typed.</summary>
+    public void MemoryRecall()
+    {
+        if (IsError)
+        {
+            ClearAll();
+        }
+
+        var text = Num(Memory);
+        if (JustEvaluated)
+        {
+            Entry = text;
+            Tape = string.Empty;
+            JustEvaluated = false;
+            Hint = $"MR {text}";
+            return;
+        }
+
+        if (Entry.Length == 0)
+        {
+            Entry = text;
+            Hint = $"MR {text}";
+            return;
+        }
+
+        // Recalling acts as an operand: after an operator it appends, otherwise it replaces what is
+        // being typed so two numbers are never glued together.
+        var last = Entry[^1];
+        Entry = last is '+' or '-' or '*' or '/' or '×' or '÷' or '−' or '(' ? Entry + text : text;
+        Hint = $"MR {text}";
+    }
+
+    /// <summary>
+    /// Pulls the last evaluated expression back into the entry so it can be edited again; this is
+    /// what tapping the result line does on the iPad.
+    /// </summary>
+    public bool RecallLastForEdit()
+    {
+        if (IsError)
+        {
+            ClearAll();
+        }
+
+        if (LastExpression.Length == 0)
+        {
+            return false;
+        }
+
+        Tape = string.Empty;
+        Entry = LastExpression;
+        JustEvaluated = false;
+        Hint = "继续编辑 / editing";
+        return true;
+    }
+
+    /// <summary>
+    /// Appends the closing parentheses the user left open, so <c>cos(</c> then <c>0.6</c> then <c>=</c>
+    /// evaluates as <c>cos(0.6)</c> - the behaviour of the iPad keypad.
+    /// </summary>
+    public static string AutoClose(string expression)
+    {
+        if (string.IsNullOrEmpty(expression))
+        {
+            return string.Empty;
+        }
+
+        var depth = 0;
+        foreach (var c in expression)
+        {
+            if (c == '(')
+            {
+                depth++;
+            }
+            else if (c == ')' && depth > 0)
+            {
+                depth--;
+            }
+        }
+
+        return depth == 0 ? expression : expression + new string(')', depth);
+    }
+
+    private static double Finite(double value) => double.IsFinite(value) ? value : 0;
 
     /// <summary>Commits the entry and stores the pending operator.</summary>
     public void ApplyOperator(string op)
@@ -609,7 +853,7 @@ public sealed class CalculatorState
             return;
         }
 
-        var expression = CurrentExpression;
+        var expression = AutoClose(CurrentExpression);
         if (expression.Length == 0)
         {
             if (LastExpression.Length == 0 || LastOperator.Length == 0 || LastOperand.Length == 0)
@@ -671,7 +915,11 @@ public sealed class CalculatorState
         JustEvaluated = false;
     }
 
-    /// <summary>Applies a function to the value on screen, for example <c>sin</c>.</summary>
+    /// <summary>
+    /// Applies a function. With a value on screen it wraps it (<c>0.6</c> then <c>cos</c> gives
+    /// <c>cos(0.6)</c>); with nothing on screen it opens the call (<c>cos(</c>) and waits for the
+    /// argument. Both halves of the iPad behaviour therefore work.
+    /// </summary>
     public void ApplyFunction(string name)
     {
         if (IsError || string.IsNullOrEmpty(name))
@@ -679,7 +927,16 @@ public sealed class CalculatorState
             return;
         }
 
-        var current = Entry.Length > 0 ? Entry : LastResult.Length > 0 ? LastResult : "0";
+        var hasOperand = Entry.Length > 0 || (JustEvaluated && LastResult.Length > 0);
+        if (!hasOperand)
+        {
+            Entry = PrefixForm(name) ?? "(";
+            JustEvaluated = false;
+            Hint = string.Empty;
+            return;
+        }
+
+        var current = Entry.Length > 0 ? Entry : LastResult;
         Entry = name switch
         {
             "sqr" => $"{Wrap(current)}²",
@@ -695,7 +952,18 @@ public sealed class CalculatorState
         };
 
         JustEvaluated = false;
+        Hint = string.Empty;
     }
+
+    /// <summary>Prefix spelling of a function, or null when the key only works on an existing value.</summary>
+    private static string? PrefixForm(string name) => name switch
+    {
+        "sqr" or "cube" or "fact" or "recip" or "pow" or "root" => null,
+        "sqrt" => "√(",
+        "cbrt" => "∛(",
+        "pow10" => "10^(",
+        _ => $"{name}("
+    };
 
     /// <summary>Applies a two argument function typed as a prefix.</summary>
     public void ApplyPrefix(string name)
@@ -768,6 +1036,7 @@ public sealed class CalculatorState
         target["angle"] = AngleUnit.ToString();
         target["precision"] = Precision;
         target["hint"] = Hint;
+        target["memory"] = Memory;
     }
 
     /// <summary>Reads the state back, tolerating missing or malformed fields.</summary>
@@ -789,6 +1058,7 @@ public sealed class CalculatorState
         SecondActive = Flag(source, "second");
         Hint = Text(source, "hint");
         Precision = Math.Clamp(Int(source, "precision", 12), 1, 17);
+        Memory = double.IsFinite(Number(source, "memory", 0)) ? Number(source, "memory", 0) : 0;
         AngleUnit = Enum.TryParse<AngleUnit>(Text(source, "angle"), true, out var angle) ? angle : AngleUnit.Degrees;
     }
 
@@ -810,6 +1080,12 @@ public sealed class CalculatorState
     private static int Int(JsonObject source, string key, int fallback) =>
         source.TryGetPropertyValue(key, out var node) && node is not null &&
         int.TryParse(node.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : fallback;
+
+    private static double Number(JsonObject source, string key, double fallback) =>
+        source.TryGetPropertyValue(key, out var node) && node is not null &&
+        double.TryParse(node.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
             ? value
             : fallback;
 
@@ -873,7 +1149,7 @@ public sealed class CalculatorState
         }
 
         var context = new EvaluationContext { AngleUnit = AngleUnit, Precision = Precision, UnitAware = true };
-        var result = _engine.Evaluate(expression, context);
+        var result = _engine.Evaluate(AutoClose(expression), context);
         return result.Ok ? result.Value : null;
     }
 

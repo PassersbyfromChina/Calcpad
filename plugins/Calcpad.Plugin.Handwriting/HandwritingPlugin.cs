@@ -2,6 +2,7 @@ using Calcpad.Core.Ai;
 using Calcpad.Core.Canvas;
 using Calcpad.Core.Plugins;
 using Calcpad.Core.Security;
+using Calcpad.Plugin.Handwriting.Solve;
 using Calcpad.Plugin.Handwriting.Ui;
 using Calcpad.Plugin.Sdk.Ui;
 using PluginCommandContext = Calcpad.Core.Plugins.CommandContext;
@@ -9,19 +10,24 @@ using PluginCommandContext = Calcpad.Core.Plugins.CommandContext;
 namespace Calcpad.Plugin.Handwriting;
 
 /// <summary>
-/// Handwriting to text. The plugin owns the whole user experience: scope selection (whole canvas or
-/// lasso), the candidate picker that appears when the recogniser refuses to guess, per object editing,
-/// write back with undo, and the settings panel that lists the local models it found.
+/// Handwriting to text, plus the iPadOS style Solve flow: write an expression, tap Solve, and the
+/// answer appears next to the ink (bound through Math Notes when it is available, rendered by this
+/// plugin otherwise). The ink is never modified, covered or deleted, and low confidence always asks
+/// the user instead of guessing.
 /// <para>
 /// Everything the plugin does goes through <see cref="IPluginContext"/>: the canvas facade is
 /// permission checked for this plugin id and <see cref="IAiApi"/> is the per plugin AI facade, so a
 /// cloud upload always ends up in the host's egress review dialog.
 /// </para>
 /// </summary>
-public sealed class HandwritingPlugin : IPlugin
+public sealed class HandwritingPlugin : IPlugin, ISolveBarActions
 {
     private readonly HashSet<PermissionKind> _granted = [];
+    private readonly SolveBarWidget _solveBar;
     private IPluginContext? _context;
+
+    /// <summary>Creates the plugin; the solve bar is registered with the shell during initialization.</summary>
+    public HandwritingPlugin() => _solveBar = new SolveBarWidget(this);
 
     /// <inheritdoc />
     public PluginManifest Manifest { get; } = new()
@@ -42,17 +48,22 @@ public sealed class HandwritingPlugin : IPlugin
         ],
         Menus =
         [
+            new MenuContribution("AI/手写转文字", "求解手写算式（Solve）", HandwritingCommands.Solve,
+                Shortcut: "Ctrl+Shift+Enter", Order: 5, LocalizedTitleZh: "求解手写算式"),
             new MenuContribution("AI/手写转文字", "整画布转文字", HandwritingCommands.RecognizeWholeCanvas,
                 Shortcut: "Ctrl+Shift+H", Order: 10, LocalizedTitleZh: "整画布转文字"),
             new MenuContribution("AI/手写转文字", "圈选部分转文字", HandwritingCommands.RecognizeRegion,
                 Shortcut: "Ctrl+Shift+L", Order: 20, LocalizedTitleZh: "圈选部分转文字"),
             new MenuContribution("AI/手写转文字", "重新识别当前对象", HandwritingCommands.ReRecognizeObject,
                 Order: 30, RequiresSelection: true, LocalizedTitleZh: "重新识别当前对象"),
+            new MenuContribution("AI/手写转文字", "删除求解结果", HandwritingCommands.DeleteSolveResult,
+                Order: 40, LocalizedTitleZh: "删除求解结果"),
             new MenuContribution("AI/手写转文字", "识别结果…", HandwritingCommands.OpenResults, Order: 80, LocalizedTitleZh: "识别结果…"),
             new MenuContribution("AI/手写转文字", "识别设置…", HandwritingCommands.OpenSettings, Order: 90, LocalizedTitleZh: "识别设置…")
         ],
         Shortcuts =
         [
+            new ShortcutContribution("Ctrl+Shift+Enter", HandwritingCommands.Solve, "Solve handwriting", LocalizedTitleZh: "求解手写算式"),
             new ShortcutContribution("Ctrl+Shift+H", HandwritingCommands.RecognizeWholeCanvas, "整画布转文字", LocalizedTitleZh: "整画布转文字"),
             new ShortcutContribution("Ctrl+Shift+L", HandwritingCommands.RecognizeRegion, "圈选部分转文字", LocalizedTitleZh: "圈选部分转文字")
         ],
@@ -68,6 +79,11 @@ public sealed class HandwritingPlugin : IPlugin
             new ToolContribution("handwriting.lasso", "圈选识别", HandwritingCommands.RecognizeRegion,
                 Shortcut: "L", Order: 20, LocalizedTitleZh: "圈选识别")
         ],
+        Widgets =
+        [
+            new WidgetContribution(SolveBarWidget.WidgetTypeId, "手写求解条 / Solve bar", HandwritingCommands.Solve,
+                SolveBarLayout.PreferredWidth, SolveBarLayout.ButtonHeight + (SolveBarLayout.Padding * 2), "手写求解条")
+        ],
         EnabledByDefault = true
     };
 
@@ -79,6 +95,12 @@ public sealed class HandwritingPlugin : IPlugin
 
     /// <summary>Last recognition pass, or null when nothing was recognised yet.</summary>
     public RecognitionSession? Session { get; private set; }
+
+    /// <summary>Last solve session (the iPad style Solve), or null when nothing was solved yet.</summary>
+    public SolveState? LastSolve { get; private set; }
+
+    /// <summary>The solve bar renderer, exposed so headless hosts and tests can drive it.</summary>
+    public SolveBarWidget SolveBar => _solveBar;
 
     /// <summary>Raised whenever <see cref="Session"/> or <see cref="Settings"/> change.</summary>
     public event EventHandler? StateChanged;
@@ -95,6 +117,7 @@ public sealed class HandwritingPlugin : IPlugin
         if (context is IPluginUiContext ui)
         {
             Theme = ui.Ui.Theme;
+            ui.Ui.RegisterWidget(_solveBar);
             ui.Ui.RegisterPanel(HandwritingCommands.ResultsPanelId, () => new HandwritingPanel(this).Build());
             ui.Ui.RegisterPanel(HandwritingCommands.SettingsPanelId, () => new HandwritingSettingsPanel(this).Build());
             ui.Ui.RegisterOverlay(HandwritingCommands.ScopeOverlayId, () => new ScopePicker(this).Build());
@@ -126,6 +149,18 @@ public sealed class HandwritingPlugin : IPlugin
 
         switch (context.CommandId)
         {
+            case HandwritingCommands.Solve:
+                await SolveAsync(context.SourceObjectId, ct).ConfigureAwait(false);
+                break;
+
+            case HandwritingCommands.DeleteSolveResult:
+                await DeleteSolveResultAsync(ct).ConfigureAwait(false);
+                break;
+
+            case HandwritingCommands.AdjustSolveNumber:
+                await AdjustFirstSolveNumberAsync(ct).ConfigureAwait(false);
+                break;
+
             case HandwritingCommands.RecognizeWholeCanvas:
                 await RecognizeWholeCanvasAsync(ct).ConfigureAwait(false);
                 break;
@@ -387,6 +422,405 @@ public sealed class HandwritingPlugin : IPlugin
         var undone = await Session.UndoAsync(ct).ConfigureAwait(false);
         StateChanged?.Invoke(this, EventArgs.Empty);
         await plugin.Host.ShowToastAsync(undone ? "已撤销上一次写回" : "没有可撤销的写回", undone ? ToastLevel.Success : ToastLevel.Info, ct).ConfigureAwait(false);
+    }
+
+    // ------------------------------------------------------------------ iPadOS style Solve
+
+    /// <summary>
+    /// Solves the handwriting the command was invoked on: the explicit object, the selected ink, or the
+    /// most recent ink on the canvas. Shows the floating solve bar next to the ink and, when confidence
+    /// allows, solves immediately; otherwise the bar lists candidates and waits.
+    /// </summary>
+    public async ValueTask SolveAsync(string? objectId = null, CancellationToken ct = default)
+    {
+        var plugin = _context;
+        if (plugin is null)
+        {
+            return;
+        }
+
+        if (!await PrepareAsync(ct).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        if (!await EnsureAsync(PermissionKind.CanvasWrite, "求解结果要放到画布上，需要修改画布。", ct).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        var ink = await ResolveInkAsync(objectId, ct).ConfigureAwait(false);
+        if (ink is null)
+        {
+            await plugin.Host.ShowToastAsync("请先写下一个算式（或选中一段手写笔迹）", ToastLevel.Info, ct).ConfigureAwait(false);
+            return;
+        }
+
+        var service = new SolveService(new PluginSolveHost(plugin), Settings);
+        var state = await service.SolveInkAsync(ink.Id, ct).ConfigureAwait(false);
+        LastSolve = state;
+        await ShowSolveBarAsync(ink, state, ct).ConfigureAwait(false);
+        StateChanged?.Invoke(this, EventArgs.Empty);
+
+        plugin.Log.Info($"Solve({ink.Id}): {state.Status} {state.Expression} = {state.Result} [{state.Engine}]");
+        await plugin.Host.ShowToastAsync(
+            state.Message.Length > 0 ? state.Message : $"已求解：{state.Expression} = {state.Result}",
+            state.Status switch
+            {
+                SolveStatus.Failed => ToastLevel.Warning,
+                SolveStatus.NeedsChoice => ToastLevel.Info,
+                _ => ToastLevel.Success
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Deletes the answer rendered for the last solve (never the ink).</summary>
+    public async ValueTask DeleteSolveResultAsync(CancellationToken ct = default)
+    {
+        var plugin = _context;
+        if (plugin is null || LastSolve is null)
+        {
+            return;
+        }
+
+        var service = new SolveService(new PluginSolveHost(plugin), Settings);
+        var (deleted, message) = await service.DeleteResultAsync(LastSolve, ct).ConfigureAwait(false);
+        if (deleted)
+        {
+            await RemoveBarAsync(LastSolve.SourceObjectId, ct).ConfigureAwait(false);
+            LastSolve = null;
+            StateChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        await plugin.Host.ShowToastAsync(message, deleted ? ToastLevel.Success : ToastLevel.Info, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Menu entry for "tap a number to adjust": hands the first number to the slider.</summary>
+    public async ValueTask AdjustFirstSolveNumberAsync(CancellationToken ct = default)
+    {
+        if (LastSolve is null)
+        {
+            return;
+        }
+
+        await AdjustSolveNumberAsync(LastSolve.SourceObjectId, 0, ct).ConfigureAwait(false);
+    }
+
+    // The solve bar talks to the plugin through ISolveBarActions; these forward to the public
+    // entry points above. They are explicit because SolveAsync(string, CancellationToken) already
+    // exists as the menu/shortcut entry point with a different meaning of the first argument.
+    async ValueTask ISolveBarActions.SolveAsync(string barObjectId, CancellationToken ct) =>
+        await SolveFromBarAsync(barObjectId, ct).ConfigureAwait(false);
+
+    async ValueTask ISolveBarActions.ChooseAsync(string barObjectId, int candidateIndex, CancellationToken ct) =>
+        await ChooseFromBarAsync(barObjectId, candidateIndex, ct).ConfigureAwait(false);
+
+    async ValueTask ISolveBarActions.AdjustAsync(string barObjectId, int numberIndex, CancellationToken ct) =>
+        await AdjustSolveNumberAsync(barObjectId, numberIndex, ct).ConfigureAwait(false);
+
+    async ValueTask ISolveBarActions.EditAsync(string barObjectId, CancellationToken ct) =>
+        await EditFromBarAsync(barObjectId, ct).ConfigureAwait(false);
+
+    async ValueTask ISolveBarActions.DeleteAsync(string barObjectId, CancellationToken ct) =>
+        await DeleteFromBarAsync(barObjectId, ct).ConfigureAwait(false);
+
+    async ValueTask ISolveBarActions.CloseAsync(string barObjectId, CancellationToken ct) =>
+        await CloseFromBarAsync(barObjectId, ct).ConfigureAwait(false);
+
+    /// <summary>Re-runs the solve for the ink bound to a solve bar.</summary>
+    public async ValueTask SolveFromBarAsync(string barObjectId, CancellationToken ct = default)
+    {
+        var plugin = _context;
+        var (bar, state) = await ReadBarAsync(barObjectId, ct).ConfigureAwait(false);
+        if (plugin is null || bar is null || state.SourceObjectId.Length == 0)
+        {
+            return;
+        }
+
+        var service = CreateSolveService();
+        var next = await service.SolveInkAsync(state.SourceObjectId, ct).ConfigureAwait(false);
+        LastSolve = next;
+        await UpdateBarAsync(bar, next, ct).ConfigureAwait(false);
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        await plugin.Host.ShowToastAsync(next.Message, next.Status == SolveStatus.Failed ? ToastLevel.Warning : ToastLevel.Info, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Uses one of the candidates listed by the bar and solves it.</summary>
+    public async ValueTask ChooseFromBarAsync(string barObjectId, int candidateIndex, CancellationToken ct = default)
+    {
+        var plugin = _context;
+        var (bar, state) = await ReadBarAsync(barObjectId, ct).ConfigureAwait(false);
+        if (plugin is null || bar is null || state.Candidates.Count == 0)
+        {
+            return;
+        }
+
+        var index = Math.Clamp(candidateIndex, 0, state.Candidates.Count - 1);
+        var chosen = state.Candidates[index];
+        var service = CreateSolveService();
+        var next = await service.SolveTextAsync(state.SourceObjectId, chosen.Text, state.Candidates, ct).ConfigureAwait(false);
+        LastSolve = next;
+        await UpdateBarAsync(bar, next, ct).ConfigureAwait(false);
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        await plugin.Host
+            .ShowToastAsync($"已按你的选择求解：{next.Expression} = {next.Result}", ToastLevel.Success, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Taps a number: slider when Math Notes offers one, otherwise an explicit edit.</summary>
+    public async ValueTask AdjustSolveNumberAsync(string barObjectId, int numberIndex, CancellationToken ct = default)
+    {
+        var plugin = _context;
+        if (plugin is null)
+        {
+            return;
+        }
+
+        var (bar, state) = await ReadBarAsync(barObjectId, ct).ConfigureAwait(false);
+        if (state.SourceObjectId.Length == 0)
+        {
+            // Menu driven path (no bar): fall back to the last solve.
+            if (LastSolve is null)
+            {
+                return;
+            }
+
+            state = LastSolve;
+        }
+
+        var service = CreateSolveService();
+        var (outcome, next, message) = await service.AdjustNumberAsync(state, numberIndex, ct).ConfigureAwait(false);
+        if (outcome is AdjustOutcome.SliderOpened or AdjustOutcome.EditFallback)
+        {
+            LastSolve = next;
+            if (bar is not null)
+            {
+                await UpdateBarAsync(bar, next, ct).ConfigureAwait(false);
+            }
+
+            StateChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        var level = outcome switch
+        {
+            AdjustOutcome.SliderOpened => ToastLevel.Success,
+            AdjustOutcome.EditFallback => ToastLevel.Warning,
+            _ => ToastLevel.Info
+        };
+        await plugin.Host.ShowToastAsync(message, level, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Edits the recognised expression by hand and solves it again.</summary>
+    public async ValueTask EditFromBarAsync(string barObjectId, CancellationToken ct = default)
+    {
+        var plugin = _context;
+        var (bar, state) = await ReadBarAsync(barObjectId, ct).ConfigureAwait(false);
+        if (plugin is null || bar is null)
+        {
+            return;
+        }
+
+        var typed = await plugin.Host
+            .PromptAsync("编辑算式", "改正识别结果，然后重新求解：", state.Expression, ct)
+            .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(typed) || string.Equals(typed.Trim(), state.Expression, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var service = CreateSolveService();
+        var next = await service.SolveTextAsync(state.SourceObjectId, typed.Trim(), state.Candidates, ct).ConfigureAwait(false);
+        LastSolve = next;
+        await UpdateBarAsync(bar, next, ct).ConfigureAwait(false);
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        await plugin.Host.ShowToastAsync($"已重新求解：{next.Expression} = {next.Result}", ToastLevel.Success, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Deletes the answer shown by a bar and hides the bar.</summary>
+    public async ValueTask DeleteFromBarAsync(string barObjectId, CancellationToken ct = default)
+    {
+        var plugin = _context;
+        var (bar, state) = await ReadBarAsync(barObjectId, ct).ConfigureAwait(false);
+        if (plugin is null || bar is null)
+        {
+            return;
+        }
+
+        var service = CreateSolveService();
+        var (deleted, message) = await service.DeleteResultAsync(state, ct).ConfigureAwait(false);
+        if (deleted)
+        {
+            await plugin.Canvas.RemoveAsync(bar.Id, ct).ConfigureAwait(false);
+            LastSolve = null;
+            StateChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        await plugin.Host.ShowToastAsync(message, deleted ? ToastLevel.Success : ToastLevel.Info, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Hides a solve bar without deleting the answer.</summary>
+    public async ValueTask CloseFromBarAsync(string barObjectId, CancellationToken ct = default)
+    {
+        var plugin = _context;
+        if (plugin is null)
+        {
+            return;
+        }
+
+        await plugin.Canvas.RemoveAsync(barObjectId, ct).ConfigureAwait(false);
+    }
+
+    private SolveService CreateSolveService()
+    {
+        var plugin = _context;
+        ISolveHost host = plugin is null
+            ? new NullSolveHost()
+            : _solveBar.AttachedHost is { } widgetHost
+                ? new WidgetSolveHost(widgetHost, plugin.Ai, plugin.Log)
+                : new PluginSolveHost(plugin);
+        return new SolveService(host, Settings);
+    }
+
+    private async ValueTask<InkObject?> ResolveInkAsync(string? objectId, CancellationToken ct)
+    {
+        var plugin = _context;
+        if (plugin is null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(objectId))
+        {
+            return await plugin.Canvas.GetAsync(objectId, ct).ConfigureAwait(false) as InkObject;
+        }
+
+        foreach (var id in plugin.Canvas.Selection)
+        {
+            if (await plugin.Canvas.GetAsync(id, ct).ConfigureAwait(false) is InkObject selected)
+            {
+                return selected;
+            }
+        }
+
+        var inks = await plugin.Canvas
+            .QueryAsync(new CanvasQuery { Kinds = [ObjectKinds.Ink] }, ct)
+            .ConfigureAwait(false);
+        return inks.OfType<InkObject>()
+            .Where(i => i.AllStrokes.Any())
+            .OrderByDescending(i => i.CreatedAt)
+            .FirstOrDefault();
+    }
+
+    /// <summary>Creates or updates the floating solve bar next to the ink.</summary>
+    private async ValueTask<string?> ShowSolveBarAsync(InkObject ink, SolveState state, CancellationToken ct)
+    {
+        var plugin = _context;
+        if (plugin is null)
+        {
+            return null;
+        }
+
+        var existing = await FindBarAsync(ink.Id, ct).ConfigureAwait(false);
+        using var edit = await plugin.Canvas.BeginEditAsync("手写求解", ct).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            await UpdateBarAsync(existing, state, ct).ConfigureAwait(false);
+            await edit.CommitAsync(ct).ConfigureAwait(false);
+            return existing.Id;
+        }
+
+        var size = SolveBarLayout.Measure(state);
+        var bar = new WidgetObject
+        {
+            WidgetType = SolveBarWidget.WidgetTypeId,
+            Title = "手写求解 / Solve",
+            OwnerPluginId = Manifest.Id,
+            Bounds = SolveGeometry.PlaceBar(ink.Bounds, size)
+        };
+        SolveBarWidget.WriteState(bar, state);
+        bar.Tags["handwriting.solvebar.sourceInk"] = ink.Id;
+        bar.RecomputeBounds();
+
+        var id = await plugin.Canvas.AddAsync(bar, ct).ConfigureAwait(false);
+        await edit.CommitAsync(ct).ConfigureAwait(false);
+        await plugin.Canvas.RevealAsync(bar.Bounds, ct).ConfigureAwait(false);
+        return id;
+    }
+
+    private async ValueTask<WidgetObject?> FindBarAsync(string inkObjectId, CancellationToken ct)
+    {
+        var plugin = _context;
+        if (plugin is null)
+        {
+            return null;
+        }
+
+        var widgets = await plugin.Canvas
+            .QueryAsync(new CanvasQuery { Kinds = [ObjectKinds.Widget] }, ct)
+            .ConfigureAwait(false);
+        return widgets
+            .OfType<WidgetObject>()
+            .FirstOrDefault(w => w.WidgetType == SolveBarWidget.WidgetTypeId &&
+                                 string.Equals(SolveBarWidget.ReadState(w).SourceObjectId, inkObjectId, StringComparison.Ordinal));
+    }
+
+    private async ValueTask<(WidgetObject? Bar, SolveState State)> ReadBarAsync(string barObjectId, CancellationToken ct)
+    {
+        var plugin = _context;
+        if (plugin is null)
+        {
+            return (null, new SolveState());
+        }
+
+        var bar = await plugin.Canvas.GetAsync(barObjectId, ct).ConfigureAwait(false) as WidgetObject;
+        return bar is null ? (null, new SolveState()) : (bar, SolveBarWidget.ReadState(bar));
+    }
+
+    private async ValueTask UpdateBarAsync(WidgetObject bar, SolveState state, CancellationToken ct)
+    {
+        var plugin = _context;
+        if (plugin is null)
+        {
+            return;
+        }
+
+        var size = SolveBarLayout.Measure(state);
+        await plugin.Canvas.UpdateAsync(bar.Id, obj =>
+        {
+            if (obj is WidgetObject widget)
+            {
+                SolveBarWidget.WriteState(widget, state);
+                widget.Bounds = new CRect(widget.Bounds.X, widget.Bounds.Y, size.Width, size.Height);
+                widget.Touch();
+            }
+        }, ct).ConfigureAwait(false);
+    }
+
+    private async ValueTask RemoveBarAsync(string inkObjectId, CancellationToken ct)
+    {
+        var plugin = _context;
+        if (plugin is null)
+        {
+            return;
+        }
+
+        var bar = await FindBarAsync(inkObjectId, ct).ConfigureAwait(false);
+        if (bar is not null)
+        {
+            await plugin.Canvas.RemoveAsync(bar.Id, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Host used when the plugin has been shut down; every call is a no-op.</summary>
+    private sealed class NullSolveHost : ISolveHost
+    {
+        public ICanvasApi Canvas => throw new InvalidOperationException("The handwriting plugin is not initialized.");
+
+        public IHostApi Host => throw new InvalidOperationException("The handwriting plugin is not initialized.");
+
+        public IAiApi Ai => throw new InvalidOperationException("The handwriting plugin is not initialized.");
+
+        public IPluginLogger Log { get; } = new NullPluginLogger();
     }
 
     /// <summary>Persists new settings from the settings panel.</summary>

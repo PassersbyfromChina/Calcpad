@@ -16,13 +16,16 @@ public sealed class AppPluginContext : IPluginUiContext
 {
     private readonly IPluginContext _inner;
 
-    public AppPluginContext(IPluginContext inner, IUiRegistry ui)
+    public AppPluginContext(IPluginContext inner, IUiRegistry ui, IClipboardApi clipboard)
     {
         _inner = inner;
         Ui = ui;
+        Clipboard = clipboard;
     }
 
     public IUiRegistry Ui { get; }
+
+    public IClipboardApi Clipboard { get; }
 
     public string PluginId => _inner.PluginId;
 
@@ -48,20 +51,28 @@ public sealed class AppPluginContextFactory : IPluginContextFactory
 {
     private readonly IPluginContextFactory _inner;
     private readonly IUiRegistry _ui;
+    private readonly IShellClipboard _clipboard;
+    private readonly IPermissionBroker _permissions;
     private readonly Dictionary<string, IPluginUiContext> _contexts = new(StringComparer.Ordinal);
 
-    public AppPluginContextFactory(IPluginContextFactory inner, IUiRegistry ui)
+    public AppPluginContextFactory(IPluginContextFactory inner, IUiRegistry ui, IShellClipboard clipboard, IPermissionBroker permissions)
     {
         _inner = inner;
         _ui = ui;
+        _clipboard = clipboard;
+        _permissions = permissions;
     }
 
     public IReadOnlyDictionary<string, IPluginUiContext> Contexts => _contexts;
 
     public IPluginContext Create(IPlugin plugin)
     {
-        var context = new AppPluginContext(_inner.Create(plugin), _ui);
-        _contexts[plugin.Manifest.Id] = context;
+        var pluginId = plugin.Manifest.Id;
+        var context = new AppPluginContext(
+            _inner.Create(plugin),
+            _ui,
+            new GatedClipboard(_permissions, pluginId, _clipboard));
+        _contexts[pluginId] = context;
         return context;
     }
 

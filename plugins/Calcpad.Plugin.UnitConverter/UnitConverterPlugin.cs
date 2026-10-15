@@ -96,8 +96,24 @@ public sealed class UnitConverterPlugin : IPlugin
             _ => ValueTask.CompletedTask
         };
 
-    /// <summary>Creates and attaches a widget object, ready to be added to the canvas.</summary>
+    /// <summary>
+    /// Creates the shared calculator surface switched to convert mode. Since iPadOS 18 conversion is a
+    /// mode of the calculator, so the toolbar command inserts that one widget rather than a second
+    /// kind of converter.
+    /// </summary>
     public WidgetObject CreateWidget()
+    {
+        var camera = _context?.Canvas.Camera;
+        var size = Plugins.CalculatorKit.CalculatorSurfaceFactory.DefaultSize(Plugins.CalculatorKit.CalculatorMode.Convert);
+        var bounds = new CRect((camera?.OffsetX ?? 0) + 140, (camera?.OffsetY ?? 0) + 140, size.Width, size.Height);
+        return Plugins.CalculatorKit.CalculatorSurfaceFactory.CreateWidget(
+            Plugins.CalculatorKit.CalculatorMode.Convert,
+            ownerPluginId: Manifest.Id,
+            bounds: bounds);
+    }
+
+    /// <summary>Creates the standalone converter widget, kept as a compatibility path.</summary>
+    public WidgetObject CreateStandaloneWidget()
     {
         var camera = _context?.Canvas.Camera;
         var widget = new WidgetObject
@@ -121,11 +137,16 @@ public sealed class UnitConverterPlugin : IPlugin
 
         try
         {
-            var widget = CreateWidget();
+            var standalone = command.Arguments.TryGetValue("standalone", out var value)
+                             && bool.TryParse(value, out var flag)
+                             && flag;
+            var widget = standalone ? CreateStandaloneWidget() : CreateWidget();
             var id = await plugin.Canvas.AddAsync(widget, ct).ConfigureAwait(false);
             await plugin.Canvas.RevealAsync(widget.Bounds, ct).ConfigureAwait(false);
             await plugin.Canvas.SetSelectionAsync([id], ct).ConfigureAwait(false);
-            plugin.Log.Info($"Unit converter inserted ({command.Trigger})");
+            plugin.Log.Info(standalone
+                ? $"Standalone unit converter inserted ({command.Trigger})"
+                : $"Calculator inserted in Convert mode ({command.Trigger})");
         }
         catch (Exception ex)
         {

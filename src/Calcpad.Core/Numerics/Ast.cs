@@ -161,10 +161,12 @@ internal sealed class BinaryNode : Node
     /// <inheritdoc />
     public override int Precedence => Op switch
     {
-        "+" or "-" => 1,
-        "*" or "/" or "%" => 2,
+        "|" => 0,
+        "&" => 1,
+        "+" or "-" => 2,
+        "*" or "/" or "%" => 3,
         "^" => 4,
-        _ => 2
+        _ => 3
     };
 
     /// <inheritdoc />
@@ -174,8 +176,6 @@ internal sealed class BinaryNode : Node
         var left = Left.RenderMin(precedence, subs);
         var right = Op switch
         {
-            "+" or "-" => Right.RenderMin(precedence + 1, subs),
-            "*" or "/" or "%" => Right.RenderMin(precedence + 1, subs),
             "^" => Right.RenderMin(precedence, subs),
             _ => Right.RenderMin(precedence + 1, subs)
         };

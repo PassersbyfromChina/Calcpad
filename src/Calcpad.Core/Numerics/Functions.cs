@@ -112,7 +112,22 @@ internal static class Functions
         });
         Add("rand", 0, 2, (a, _) => Number(RandomValue(a)));
 
+        // Math Notes extras: fmod keeps the sign of the dividend, rint is banker's rounding.
+        Add("fmod", 2, 2, (a, _) => Number(Fmod(Dimensionless(a[0], "fmod"), Dimensionless(a[1], "fmod"))));
+        Add("rint", 1, 1, (a, _) => new Quantity(Math.Round(a[0].Value, MidpointRounding.ToEven), a[0].Unit));
+
         return table;
+    }
+
+    /// <summary>C style remainder: the result carries the sign of the dividend.</summary>
+    private static double Fmod(double value, double divisor)
+    {
+        if (divisor == 0)
+        {
+            throw new CalcException(Errors.DivideByZero);
+        }
+
+        return value % divisor;
     }
 
     private static Quantity Number(double value) => Quantity.Number(Guarded(value, string.Empty));

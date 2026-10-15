@@ -34,6 +34,14 @@ public sealed record PluginManifest
 
     public IReadOnlyList<WidgetContribution> Widgets { get; init; } = [];
 
+    /// <summary>
+    /// Commands this plugin handles but does not surface through a menu, shortcut, tool, panel or
+    /// widget. The host indexes command owners from the contributions plus this list, so a plugin
+    /// can offer a pure API command to other plugins without inventing a fake UI entry. Without it
+    /// such a command would silently never be dispatched.
+    /// </summary>
+    public IReadOnlyList<string> Commands { get; init; } = [];
+
     /// <summary>Search keywords, also used by the command palette and by the store listing.</summary>
     public IReadOnlyList<string> Keywords { get; init; } = [];
 

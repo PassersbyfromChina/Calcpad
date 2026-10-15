@@ -229,10 +229,20 @@ internal static class Evaluator
             "/" => left.Divide(right),
             "%" => Modulo(left, right),
             "^" => left.Pow(right.RequireNumber()),
+            "&" => Bitwise(left, right, and: true),
+            "|" => Bitwise(left, right, and: false),
             _ => throw new CalcException(Errors.UnexpectedToken(binary.Op))
         };
 
         return Reduce(scope, binary, value, "precedence");
+    }
+
+    /// <summary>Bitwise and / or on whole numbers, as Math Notes accepts with <c>&amp;</c> and <c>|</c>.</summary>
+    private static Quantity Bitwise(Quantity left, Quantity right, bool and)
+    {
+        var a = Guards.WholeNumber(left.RequireNumber(), "bitwise ");
+        var b = Guards.WholeNumber(right.RequireNumber(), "bitwise ");
+        return Quantity.Number(and ? a & b : a | b);
     }
 
     private static Quantity Modulo(Quantity left, Quantity right)

@@ -4,6 +4,7 @@ using Avalonia.Media;
 using Calcpad.Core.Canvas;
 using Calcpad.Core.Numerics;
 using Calcpad.Plugin.Sdk.Ui;
+using Calcpad.Plugins.CalculatorKit;
 
 namespace Calcpad.Plugin.UnitConverter;
 
@@ -143,18 +144,24 @@ public sealed class UnitConverterLayout
 
 /// <summary>
 /// The converter's state and behaviour, free of any Avalonia dependency: two units, two texts, live
-/// two way conversion and a category selection. This is what the unit tests drive.
+/// two way conversion and a category selection. Currency pairs are routed through the shared rate
+/// table so the "manual rate" / "rate unavailable" rules cannot be bypassed.
 /// </summary>
 public sealed class UnitConverterModel
 {
     private readonly IUnitConverter _converter;
+    private readonly CurrencyRateTable _rates;
 
     /// <summary>Creates the model around a converter.</summary>
-    public UnitConverterModel(IUnitConverter converter)
+    public UnitConverterModel(IUnitConverter converter, CurrencyRateTable? rates = null)
     {
         _converter = converter;
+        _rates = rates ?? new CurrencyRateTable();
         Reset();
     }
+
+    /// <summary>The rate table currencies convert through.</summary>
+    public CurrencyRateTable Rates => _rates;
 
     /// <summary>Selected category id.</summary>
     public string CategoryId { get; set; } = "length";
@@ -180,22 +187,28 @@ public sealed class UnitConverterModel
     /// <summary>Transient message drawn under the picker.</summary>
     public string Hint { get; set; } = string.Empty;
 
-    /// <summary>The catalogue.</summary>
-    public IReadOnlyList<UnitCategory> Categories => _converter.Categories;
+    /// <summary>The catalogue, currency included.</summary>
+    public IReadOnlyList<UnitCategory> Categories => CalculatorConversion.CategoriesWithCurrency(_converter, _rates);
 
     /// <summary>The selected category, never null.</summary>
     public UnitCategory CurrentCategory =>
-        _converter.FindCategory(CategoryId) ?? _converter.Categories[0];
+        FindCategory(CategoryId) ?? Categories[0];
+
+    /// <summary>Finds a category, including the synthetic currency one.</summary>
+    public UnitCategory? FindCategory(string? categoryId) =>
+        string.IsNullOrWhiteSpace(categoryId)
+            ? null
+            : Categories.FirstOrDefault(c => string.Equals(c.Id, categoryId, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Resets everything to the default state.</summary>
     public void Reset()
     {
-        if (_converter.Categories.Count == 0)
+        if (Categories.Count == 0)
         {
             return;
         }
 
-        CategoryId = _converter.Categories[0].Id;
+        CategoryId = Categories[0].Id;
         FromText = "1";
         ToText = string.Empty;
         Active = "from";
@@ -208,7 +221,7 @@ public sealed class UnitConverterModel
     /// <summary>Switches category and picks sensible default units.</summary>
     public void SelectCategory(string categoryId)
     {
-        if (_converter.FindCategory(categoryId) is null)
+        if (FindCategory(categoryId) is null)
         {
             return;
         }
@@ -361,9 +374,9 @@ public sealed class UnitConverterModel
         Picker = Read(source, "picker", string.Empty);
         Hint = Read(source, "hint", string.Empty);
 
-        if (_converter.FindCategory(CategoryId) is null)
+        if (FindCategory(CategoryId) is null)
         {
-            CategoryId = _converter.Categories[0].Id;
+            CategoryId = Categories[0].Id;
         }
 
         if (CurrentCategory.Find(FromUnit) is null || CurrentCategory.Find(ToUnit) is null)
@@ -373,9 +386,9 @@ public sealed class UnitConverterModel
     }
 
     /// <summary>Reads a model out of a widget object, falling back to defaults.</summary>
-    public static UnitConverterModel From(WidgetObject target, IUnitConverter converter)
+    public static UnitConverterModel From(WidgetObject target, IUnitConverter converter, CurrencyRateTable? rates = null)
     {
-        var model = new UnitConverterModel(converter);
+        var model = new UnitConverterModel(converter, rates);
         model.Load(target.State);
         return model;
     }
@@ -392,7 +405,7 @@ public sealed class UnitConverterModel
             return;
         }
 
-        var result = _converter.Convert(value, from, to);
+        var result = CalculatorConversion.Convert(_converter, _rates, value, from, to);
         if (!result.Ok || result.Value is null)
         {
             Hint = result.Error ?? "无法换算 / cannot convert";

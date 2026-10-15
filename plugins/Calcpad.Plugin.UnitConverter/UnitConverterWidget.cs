@@ -22,16 +22,25 @@ public sealed class UnitConverterWidget : IWidgetRenderer
         new(new FontFamily("Inter, Segoe UI, Noto Sans CJK SC, sans-serif"), FontStyle.Normal, FontWeight.SemiBold);
 
     private readonly IUnitConverter _converter;
+    private readonly Plugins.CalculatorKit.CurrencyRateTable _rates;
 
     /// <summary>Creates the widget around a converter implementation.</summary>
-    public UnitConverterWidget(IUnitConverter? converter = null) =>
+    public UnitConverterWidget(
+        IUnitConverter? converter = null,
+        Plugins.CalculatorKit.CurrencyRateTable? rates = null)
+    {
         _converter = converter ?? new Calcpad.Core.Numerics.UnitConverter();
+        _rates = rates ?? new Plugins.CalculatorKit.CurrencyRateTable();
+    }
 
     /// <inheritdoc />
     public string WidgetType => "calcpad.unit.converter";
 
     /// <summary>The converter backing this widget.</summary>
     public IUnitConverter Converter => _converter;
+
+    /// <summary>Currency rate table currencies convert through.</summary>
+    public Plugins.CalculatorKit.CurrencyRateTable Rates => _rates;
 
     /// <inheritdoc />
     public CSize Measure(WidgetMeasureContext context) => new(400, 560);
@@ -43,7 +52,7 @@ public sealed class UnitConverterWidget : IWidgetRenderer
     public void InitializeState(WidgetObject target)
     {
         target.State ??= new JsonObject();
-        var model = UnitConverterModel.From(target, _converter);
+        var model = UnitConverterModel.From(target, _converter, _rates);
         model.Reset();
         model.Save(target.State);
         target.State["pressed"] = null;
@@ -55,7 +64,7 @@ public sealed class UnitConverterWidget : IWidgetRenderer
         var theme = context.Theme;
         var drawing = context.Drawing;
         var size = context.LogicalSize;
-        var model = UnitConverterModel.From(context.Object, _converter);
+        var model = UnitConverterModel.From(context.Object, _converter, _rates);
         var picker = model.Picker.Length == 0 ? null : model.Picker;
         var layout = UnitConverterLayout.Compute(size, model.Categories, model.CategoryId, picker);
         var pressed = ReadPressed(context.Object);
@@ -155,7 +164,7 @@ public sealed class UnitConverterWidget : IWidgetRenderer
     {
         var theme = context.Host.Theme;
         var size = context.LogicalSize;
-        var model = UnitConverterModel.From(context.Object, _converter);
+        var model = UnitConverterModel.From(context.Object, _converter, _rates);
         var picker = model.Picker.Length == 0 ? null : model.Picker;
         var layout = UnitConverterLayout.Compute(size, model.Categories, model.CategoryId, picker);
 
@@ -210,7 +219,7 @@ public sealed class UnitConverterWidget : IWidgetRenderer
     /// <inheritdoc />
     public bool OnKey(WidgetKeyContext context)
     {
-        var model = UnitConverterModel.From(context.Object, _converter);
+        var model = UnitConverterModel.From(context.Object, _converter, _rates);
         var key = context.Key ?? string.Empty;
         switch (key)
         {

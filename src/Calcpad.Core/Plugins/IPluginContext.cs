@@ -23,6 +23,13 @@ public interface IPluginContext
 
     IHostApi Host { get; }
 
+    /// <summary>
+    /// Clipboard access, gated on <c>ClipboardWrite</c> / <c>ClipboardRead</c> for this plugin.
+    /// Defaults to a fail closed implementation so a context without a real clipboard refuses
+    /// loudly instead of pretending the copy succeeded.
+    /// </summary>
+    IClipboardApi Clipboard => DeniedClipboardApi.Instance;
+
     IPluginSettings Settings { get; }
 
     IPluginLogger Log { get; }
@@ -71,6 +78,22 @@ public interface IHostApi
 
     /// <summary>Runs a long operation with a cancellable progress affordance.</summary>
     ValueTask RunWithProgressAsync(string title, Func<IProgressReporter, CancellationToken, ValueTask> work, CancellationToken ct = default);
+
+    /// <summary>
+    /// Invokes a command declared by any enabled plugin, including this one. Returns false when no
+    /// enabled plugin owns the id. This is how plugins cooperate: the handwriting plugin asks the
+    /// math notes plugin to solve a line, and the calculator asks the notes plugin to switch mode.
+    /// The target still runs with its own grants, so a plugin cannot use this to borrow privilege.
+    /// </summary>
+    ValueTask<bool> ExecuteCommandAsync(string commandId, IReadOnlyDictionary<string, string>? arguments = null, CancellationToken ct = default) =>
+        ValueTask.FromResult(false);
+
+    /// <summary>
+    /// Probes whether a command is currently available without running it, so callers can offer an
+    /// honest degraded path instead of guessing. Returns false when no enabled plugin owns the id.
+    /// </summary>
+    ValueTask<bool> HasCommandAsync(string commandId, CancellationToken ct = default) =>
+        ValueTask.FromResult(false);
 }
 
 public interface IProgressReporter

@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Calcpad.Core.Ai;
+using Calcpad.Plugin.Handwriting.Solve;
 using Calcpad.Plugin.Sdk.Ui;
 
 namespace Calcpad.Plugin.Handwriting.Ui;
@@ -101,7 +102,100 @@ public sealed class HandwritingPanel
 
         _root.Children.Add(WritebackRows(session));
         _root.Children.Add(Actions(session));
+        _root.Children.Add(SolveSection(session));
     }
+
+    /// <summary>
+    /// The iPadOS style Solve block: one Solve button for the ink at hand, the inline answer once it
+    /// exists, number chips that hand a value to the math notes slider, and the delete action.
+    /// </summary>
+    private Control SolveSection(RecognitionSession session)
+    {
+        var stack = UiKit.VStack(6);
+        stack.Children.Add(UiKit.Body("求解 / Solve（结果出现在算式旁边，不改动笔迹）", _theme));
+
+        var targetInk = session.TargetObjectIds.FirstOrDefault();
+        var solve = UiKit.Primary("求解这个算式 Solve", _theme, () => _ = _plugin.SolveAsync(targetInk));
+        stack.Children.Add(solve);
+
+        var state = _plugin.LastSolve;
+        if (state is null)
+        {
+            stack.Children.Add(UiKit.Body("写下算式后点这里：识别 → 分级 → 行内显示结果。", _theme, secondary: true));
+            return UiKit.Card(stack, _theme);
+        }
+
+        var engine = state.Engine switch
+        {
+            "mathnotes-solve" => "数学笔记（绑定笔迹）",
+            "mathnotes-append" => "数学笔记（未绑定笔迹）",
+            "local-fallback" => "本地渲染（Math Notes 不可用）",
+            _ => state.Engine
+        };
+        stack.Children.Add(UiKit.Body($"状态：{DescribeSolveStatus(state.Status)} · 引擎：{engine}", _theme, secondary: true));
+        if (state.Result.Length > 0)
+        {
+            var line = new TextBlock
+            {
+                Text = $"{state.Expression} = {state.Result}",
+                FontSize = 20,
+                FontStyle = FontStyle.Italic,
+                FontFamily = new FontFamily(HandwritingStyle.FontFamily),
+                Foreground = _theme.Brush(_theme.Accent),
+                TextWrapping = TextWrapping.Wrap
+            };
+            stack.Children.Add(line);
+        }
+
+        if (state.Numbers.Count > 0 && state.Result.Length > 0)
+        {
+            var chips = UiKit.HStack(6);
+            chips.Children.Add(UiKit.Body("点数字调整：", _theme, secondary: true));
+            for (var i = 0; i < state.Numbers.Count; i++)
+            {
+                var index = i;
+                chips.Children.Add(UiKit.Secondary(state.Numbers[i], _theme, () => _ = _plugin.AdjustSolveNumberAsync(string.Empty, index)));
+            }
+
+            stack.Children.Add(chips);
+        }
+
+        if (state.Status == SolveStatus.NeedsChoice && state.Candidates.Count > 0)
+        {
+            stack.Children.Add(UiKit.Banner("置信度不足，请选择正确的算式（插件不猜）", _theme.Accent, _theme));
+            for (var i = 0; i < state.Candidates.Count; i++)
+            {
+                var candidate = state.Candidates[i];
+                var index = i;
+                stack.Children.Add(UiKit.Secondary(
+                    $"用「{candidate.Text}」求解 · {UiKit.Percent(candidate.Confidence)}",
+                    _theme,
+                    () => _ = _plugin.ChooseFromBarAsync($"panel:{state.SourceObjectId}", index)));
+            }
+        }
+
+        if (state.Message.Length > 0)
+        {
+            stack.Children.Add(UiKit.Body(state.Message, _theme, secondary: true));
+        }
+
+        var actions = UiKit.HStack(8);
+        actions.Children.Add(UiKit.Secondary("重新求解", _theme, () => _ = _plugin.SolveAsync(state.SourceObjectId)));
+        actions.Children.Add(UiKit.Secondary("删除求解结果", _theme, () => _ = _plugin.DeleteSolveResultAsync()));
+        stack.Children.Add(actions);
+        return UiKit.Card(stack, _theme);
+    }
+
+    private static string DescribeSolveStatus(SolveStatus status) => status switch
+    {
+        SolveStatus.SolvedInNotes => "已求解（数学笔记行，绑定笔迹）",
+        SolveStatus.SolvedInNotesUnbound => "已求解（数学笔记行）",
+        SolveStatus.SolvedLocally => "已求解（本地渲染）",
+        SolveStatus.NeedsChoice => "需要你选择候选",
+        SolveStatus.Failed => "求解失败",
+        SolveStatus.Refused => "已拒绝",
+        _ => "待求解"
+    };
 
     private Control CandidatePicker(RecognitionResult result)
     {

@@ -12,11 +12,13 @@
     <ProjectReference Include="..\..\src\Calcpad.Plugin.Sdk\Calcpad.Plugin.Sdk.csproj" />
   </ItemGroup>
 
-  <!-- The keypad state machine and the paint helpers are shared with the basic calculator by
-       compiling the same sources into this assembly; the plugins stay independently loadable. -->
+  <!-- The keypad state machine, the paint helpers and the calculator surface kit are shared with the
+       basic calculator by compiling the same sources into this assembly; the plugins stay
+       independently loadable. The wildcard keeps the list complete when the kit grows; the plugin
+       entry point and the widget renderers are excluded so this assembly declares exactly one IPlugin. -->
   <ItemGroup>
-    <Compile Include="..\Calcpad.Plugin.BasicCalculator\CalculatorKit.cs" Link="Shared\CalculatorKit.cs" />
-    <Compile Include="..\Calcpad.Plugin.BasicCalculator\CalculatorPaint.cs" Link="Shared\CalculatorPaint.cs" />
+    <Compile Include="..\Calcpad.Plugin.BasicCalculator\*.cs" LinkBase="Shared\CalculatorKit"
+             Exclude="..\Calcpad.Plugin.BasicCalculator\BasicCalculatorPlugin.cs;..\Calcpad.Plugin.BasicCalculator\BasicCalculatorWidget.cs;..\Calcpad.Plugin.BasicCalculator\CalculatorSurfaceWidget.cs" />
   </ItemGroup>
 
 </Project>

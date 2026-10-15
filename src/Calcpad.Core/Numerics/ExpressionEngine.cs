@@ -391,6 +391,164 @@ public sealed class ExpressionEngine : IExpressionEngine
 
     /// <summary>Renders a human readable list of the supported operators, for help surfaces.</summary>
     public static string OperatorHelp => new StringBuilder()
-        .Append("+ - × ÷ ^ % ! ( ) , ; = to")
+        .Append("+ - × ÷ ^ % ! ( ) , ; = to & |")
         .ToString();
+
+    /// <summary>
+    /// Evaluates one Math Notes line the way the iPad app does: every statement (separated by spaces
+    /// or semicolons) is evaluated in order with shared variables, so <c>a = 1 a = a + 1</c> works,
+    /// and the result comes with its natural unit note and the numeric literals a slider can grab.
+    /// </summary>
+    public LineEvaluation EvaluateLine(string lineText, EvaluationContext? context = null)
+    {
+        var literals = LineAnalysis.FindNumericLiterals(lineText);
+        if (string.IsNullOrWhiteSpace(lineText))
+        {
+            return new LineEvaluation(false, null, null, null, [], null, [], literals, []);
+        }
+
+        if (lineText.Length > MaxExpressionLength)
+        {
+            return new LineEvaluation(false, null, Errors.TooLong, null, [], null, [], literals, []);
+        }
+
+        var supplied = context ?? EvaluationContext.Default;
+
+        // Statements share one mutable variable table for the duration of the line, then the values
+        // are written back so the next line sees them (this is what makes line-by-line variables work).
+        var lineContext = new EvaluationContext
+        {
+            Variables = new Dictionary<string, string>(supplied.Variables, StringComparer.OrdinalIgnoreCase),
+            Precision = supplied.Precision,
+            AngleUnit = supplied.AngleUnit,
+            UnitAware = supplied.UnitAware
+        };
+
+        try
+        {
+            var statements = new List<StatementEvaluation>();
+            var assignments = new List<string>();
+            var ok = true;
+            string? value = null;
+            string? error = null;
+            string? normalized = null;
+            string? natural = null;
+            IReadOnlyList<string> steps = [];
+
+            foreach (var statement in LineAnalysis.SplitStatements(lineText))
+            {
+                var result = Evaluate(statement, lineContext);
+                statements.Add(new StatementEvaluation(statement, result.Value, result.Error));
+                if (result.Ok)
+                {
+                    value = result.Value;
+                    error = null;
+                    normalized = result.NormalizedExpression;
+                    steps = result.Steps;
+                }
+                else
+                {
+                    ok = false;
+                    error = result.Error;
+                }
+
+                foreach (var name in ExtractAssignments(statement))
+                {
+                    if (!assignments.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        assignments.Add(name);
+                    }
+                }
+            }
+
+            if (value is not null && Evaluator.TryParseStoredQuantity(value, out var quantity))
+            {
+                natural = NaturalUnits.Describe(quantity, Math.Min(6, Guards.Precision(supplied.Precision)));
+            }
+
+            WriteBack(supplied, lineContext);
+            return new LineEvaluation(ok, value, error, normalized, steps, natural, statements, literals, assignments);
+        }
+        catch (CalcException ex)
+        {
+            return new LineEvaluation(false, null, ex.Message, null, [], null, [], literals, []);
+        }
+        catch (Exception ex)
+        {
+            return new LineEvaluation(false, null, Errors.Unexpected(ex.Message), null, [], null, [], literals, []);
+        }
+    }
+
+    /// <summary>
+    /// Finds the numeric literals of a line (value, source span, suggested range and step), which is
+    /// what the Math Notes slider edits in place.
+    /// </summary>
+    public IReadOnlyList<NumericLiteral> FindNumericLiterals(string? lineText) =>
+        LineAnalysis.FindNumericLiterals(lineText);
+
+    /// <summary>
+    /// True when a line can be plotted: it must define <c>y = f(x)</c> (or any expression in
+    /// <c>x</c>) so the graph can follow the equation live.
+    /// </summary>
+    public bool TryDescribeGraph(string lineText, out string expression, out string variable)
+    {
+        expression = string.Empty;
+        variable = "x";
+        if (string.IsNullOrWhiteSpace(lineText) || lineText.Length > MaxExpressionLength)
+        {
+            return false;
+        }
+
+        var statements = LineAnalysis.SplitStatements(lineText);
+        if (statements.Count == 0)
+        {
+            return false;
+        }
+
+        var statement = statements[^1];
+        var equals = statement.IndexOf('=', StringComparison.Ordinal);
+        var body = equals >= 0 ? statement[(equals + 1)..].Trim() : statement.Trim();
+        if (body.Length == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            var tokens = Lexer.Tokenize(body);
+            var usesVariable = tokens.Any(t => t.Kind == TokenKind.Identifier && t.Text.Length == 1
+                && (t.Text[0] == 'x' || t.Text[0] == 'X'));
+            if (!usesVariable)
+            {
+                return false;
+            }
+        }
+        catch (CalcException)
+        {
+            return false;
+        }
+
+        expression = body;
+        return true;
+    }
+
+    private static void WriteBack(EvaluationContext supplied, EvaluationContext lineContext)
+    {
+        if (ReferenceEquals(supplied, EvaluationContext.Default))
+        {
+            return;
+        }
+
+        try
+        {
+            foreach (var pair in lineContext.Variables)
+            {
+                supplied.Variables[pair.Key] = pair.Value;
+            }
+        }
+        catch (NotSupportedException)
+        {
+            // A read only dictionary simply keeps the values local to this line.
+        }
+    }
 }

@@ -5,106 +5,14 @@ using Avalonia.Media;
 using Calcpad.Core.Canvas;
 using Calcpad.Core.Numerics;
 using Calcpad.Plugin.Sdk.Ui;
+using Calcpad.Plugins.CalculatorKit;
 
 namespace Calcpad.Plugin.History;
 
-/// <summary>Geometry of one history row.</summary>
-public sealed record HistoryRowLayout(int Index, CRect Row, CRect ExpressionArea, CRect ResultArea, CRect ReinsertButton);
-
-/// <summary>Pure geometry of the history widget.</summary>
-public sealed class HistoryLayout
-{
-    /// <summary>Title strip.</summary>
-    public CRect Title { get; init; }
-
-    /// <summary>Small button in the title row that opens and closes the search field.</summary>
-    public CRect SearchToggle { get; init; }
-
-    /// <summary>Search field; empty when search is collapsed.</summary>
-    public CRect SearchField { get; init; }
-
-    /// <summary>Area the rows are drawn into.</summary>
-    public CRect ListArea { get; init; }
-
-    /// <summary>Visible rows.</summary>
-    public IReadOnlyList<HistoryRowLayout> Rows { get; init; } = [];
-
-    /// <summary>Placeholder area shown when there is nothing to list.</summary>
-    public CRect EmptyState { get; init; }
-
-    /// <summary>Clear button.</summary>
-    public CRect ClearButton { get; init; }
-
-    /// <summary>Refresh button.</summary>
-    public CRect RefreshButton { get; init; }
-
-    /// <summary>First entry index that is visible.</summary>
-    public int FirstVisible { get; init; }
-
-    /// <summary>Computes the layout for a widget of the given logical size.</summary>
-    public static HistoryLayout Compute(CSize size, int itemCount, bool showSearch, int selected, int scroll)
-    {
-        const double padding = 12;
-        var width = Math.Max(200, size.Width);
-        var height = Math.Max(160, size.Height);
-        var title = new CRect(padding, 8, width - (padding * 2), 28);
-        var searchField = showSearch
-            ? new CRect(title.X, title.Bottom + 2, title.Width, 30)
-            : CRect.Empty;
-        var listTop = showSearch ? searchField.Bottom + 6 : title.Bottom + 4;
-        var footerHeight = 40d;
-        var footerTop = height - padding - footerHeight;
-        var listArea = new CRect(title.X, listTop, title.Width, Math.Max(20, footerTop - listTop - 6));
-
-        var rowHeight = 54d;
-        var visible = Math.Max(1, (int)(listArea.Height / rowHeight));
-        var maxScroll = Math.Max(0, itemCount - visible);
-        var first = Math.Clamp(scroll, 0, maxScroll);
-        if (selected >= 0)
-        {
-            if (selected < first)
-            {
-                first = selected;
-            }
-            else if (selected >= first + visible)
-            {
-                first = Math.Clamp(selected - visible + 1, 0, maxScroll);
-            }
-        }
-
-        var rows = new List<HistoryRowLayout>();
-        for (var i = first; i < Math.Min(itemCount, first + visible); i++)
-        {
-            var row = new CRect(listArea.X, listArea.Y + ((i - first) * rowHeight), listArea.Width, rowHeight - 4);
-            var buttonWidth = Math.Min(54, row.Width * 0.22);
-            rows.Add(new HistoryRowLayout(
-                i,
-                row,
-                new CRect(row.X + 8, row.Y + 2, Math.Max(20, row.Width - buttonWidth - 20), row.Height * 0.5),
-                new CRect(row.X + 8, row.Y + (row.Height * 0.5), Math.Max(20, row.Width - buttonWidth - 20), row.Height * 0.5 - 2),
-                new CRect(row.Right - buttonWidth - 6, row.Y + ((row.Height - 26) / 2), buttonWidth, 26)));
-        }
-
-        var gap = 8d;
-        var buttonWidth2 = (title.Width - gap) / 2;
-        return new HistoryLayout
-        {
-            Title = title,
-            SearchToggle = new CRect(title.Right - 58, title.Y + 3, 58, 22),
-            SearchField = searchField,
-            ListArea = listArea,
-            Rows = rows,
-            EmptyState = listArea,
-            ClearButton = new CRect(title.X, footerTop, buttonWidth2, footerHeight),
-            RefreshButton = new CRect(title.X + buttonWidth2 + gap, footerTop, buttonWidth2, footerHeight),
-            FirstVisible = first
-        };
-    }
-}
-
 /// <summary>
-/// The persisted calculation history as a canvas widget: newest first, searchable, with one tap
-/// reinserting an entry onto the canvas and a clear button.
+/// The persisted calculation history as a canvas widget: newest first, searchable, with the iPad
+/// gestures - tap to send an entry back to the calculator, long press for copy expression / copy
+/// result, swipe sideways to delete one entry, and an Edit mode for deleting several at once.
 /// </summary>
 public sealed class HistoryWidget : IWidgetRenderer
 {
@@ -116,9 +24,21 @@ public sealed class HistoryWidget : IWidgetRenderer
 
     private readonly HistoryStore _store;
     private readonly List<(WidgetObject Target, IWidgetHost Host, EventHandler Handler)> _subscriptions = [];
+    private readonly Dictionary<string, int> _pressRow = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, double> _pressX = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, double> _pressAt = new(StringComparer.Ordinal);
 
     /// <summary>Creates the widget over a history store.</summary>
     public HistoryWidget(HistoryStore store) => _store = store;
+
+    /// <summary>
+    /// Copies text to the clipboard. Installed by the plugin, which holds the permission gated
+    /// clipboard API; when it is missing the widget says so instead of claiming success.
+    /// </summary>
+    public ClipboardWriter? Clipboard { get; set; }
+
+    /// <summary>Command that sends an entry back to the calculator.</summary>
+    public const string RefillCommandId = CalculatorCommands.RefillCommandId;
 
     /// <inheritdoc />
     public string WidgetType => "calcpad.history";
@@ -147,6 +67,22 @@ public sealed class HistoryWidget : IWidgetRenderer
         }
     }
 
+    /// <summary>Geometry of the list for a widget at a given size; also used by verification.</summary>
+    public HistoryLayout LayoutFor(WidgetObject target, CSize size)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        var state = target.State ?? new JsonObject();
+        var entries = _store.Search(ReadString(state, "query"), 200);
+        return HistoryLayout.Compute(
+            size,
+            entries.Count,
+            ReadBool(state, "showSearch"),
+            ReadInt(state, "selected", -1),
+            ReadInt(state, "scroll", 0),
+            ReadBool(state, "editMode"),
+            ReadInt(state, "menuIndex", -1));
+    }
+
     /// <summary>Initialises <see cref="WidgetObject.State"/> without needing a live host.</summary>
     public void InitializeState(WidgetObject target)
     {
@@ -156,6 +92,9 @@ public sealed class HistoryWidget : IWidgetRenderer
         state["selected"] ??= -1;
         state["scroll"] ??= 0;
         state["showSearch"] ??= false;
+        state["editMode"] ??= false;
+        state["menuIndex"] ??= -1;
+        state["checked"] ??= new JsonArray();
         state["hint"] ??= null;
         state["pressed"] ??= null;
         state["updatedAt"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
@@ -172,23 +111,39 @@ public sealed class HistoryWidget : IWidgetRenderer
         var selected = ReadInt(state, "selected", -1);
         var scroll = ReadInt(state, "scroll", 0);
         var showSearch = ReadBool(state, "showSearch");
+        var editMode = ReadBool(state, "editMode");
+        var menuIndex = ReadInt(state, "menuIndex", -1);
+        var checkedKeys = ReadKeys(state, "checked");
         var entries = _store.Search(query, 200);
-        var layout = HistoryLayout.Compute(size, entries.Count, showSearch, selected, scroll);
+        var layout = HistoryLayout.Compute(size, entries.Count, showSearch, selected, scroll, editMode, menuIndex);
         var pressed = ReadString(state, "pressed");
 
         drawing.DrawRectangle(theme.SurfaceBrush, null, new RoundedRect(new Rect(0, 0, size.Width, size.Height), 20));
         DrawText(drawing, "历史记录 / History", layout.Title, 16, theme.Brush(theme.TextPrimary), Align.Left, true);
         DrawText(
             drawing,
-            $"{entries.Count} 条 / items",
-            new CRect(layout.Title.X, layout.Title.Y, Math.Max(10, layout.SearchToggle.X - layout.Title.X - 6), layout.Title.Height),
+            editMode ? $"{checkedKeys.Count} 已选 / selected" : $"{entries.Count} 条 / items",
+            new CRect(layout.Title.X, layout.Title.Y, Math.Max(10, layout.EditButton.X - layout.Title.X - 6), layout.Title.Height),
             11,
             theme.Brush(theme.TextSecondary),
             Align.Right);
 
+        var editFill = editMode
+            ? theme.Accent
+            : string.Equals(pressed, HistoryLayout.ActionEdit, StringComparison.Ordinal) ? Lighten(theme.SurfaceRaised, 0.35) : theme.SurfaceRaised;
+        Panel(drawing, layout.EditButton, theme.Brush(editFill), 8);
+        DrawText(
+            drawing,
+            editMode ? "完成" : "编辑",
+            layout.EditButton,
+            11,
+            theme.Brush(editMode ? theme.AccentText : theme.TextPrimary),
+            Align.Center,
+            true);
+
         var toggleFill = showSearch
             ? theme.Accent
-            : string.Equals(pressed, "search", StringComparison.Ordinal) ? Lighten(theme.SurfaceRaised, 0.35) : theme.SurfaceRaised;
+            : string.Equals(pressed, HistoryLayout.ActionSearch, StringComparison.Ordinal) ? Lighten(theme.SurfaceRaised, 0.35) : theme.SurfaceRaised;
         Panel(drawing, layout.SearchToggle, theme.Brush(toggleFill), 8);
         DrawText(
             drawing,
@@ -227,7 +182,18 @@ public sealed class HistoryWidget : IWidgetRenderer
         {
             var entry = entries[row.Index];
             var isSelected = row.Index == selected;
-            Panel(drawing, row.Row, theme.Brush(isSelected ? theme.SurfaceRaised : theme.SurfaceAlt), 10);
+            var isChecked = checkedKeys.Contains(KeyOf(entry));
+            Panel(drawing, row.Row, theme.Brush(isChecked || isSelected ? theme.SurfaceRaised : theme.SurfaceAlt), 10);
+
+            if (editMode)
+            {
+                Panel(drawing, row.Checkbox, theme.Brush(isChecked ? theme.Accent : theme.SurfaceRaised), 6);
+                if (isChecked)
+                {
+                    DrawText(drawing, "✓", row.Checkbox, 12, theme.Brush(theme.AccentText), Align.Center, true);
+                }
+            }
+
             DrawFitted(drawing, entry.Expression, row.ExpressionArea, 12.5, 9, theme.Brush(theme.TextPrimary), Align.Left, isSelected);
             DrawFitted(
                 drawing,
@@ -238,22 +204,52 @@ public sealed class HistoryWidget : IWidgetRenderer
                 theme.Brush(entry.IsError ? theme.Danger : theme.Accent),
                 Align.Left);
 
-            var reinsertFill = string.Equals(pressed, $"reinsert:{row.Index}", StringComparison.Ordinal)
-                ? Lighten(theme.SurfaceRaised, 0.35)
-                : theme.SurfaceRaised;
-            Panel(drawing, row.ReinsertButton, theme.Brush(reinsertFill), 8);
-            DrawText(drawing, "插入", row.ReinsertButton, 11, theme.Brush(theme.TextPrimary), Align.Center, true);
+            if (!editMode)
+            {
+                var reinsertFill = string.Equals(pressed, $"reinsert:{row.Index}", StringComparison.Ordinal)
+                    ? Lighten(theme.SurfaceRaised, 0.35)
+                    : theme.SurfaceRaised;
+                Panel(drawing, row.ReinsertButton, theme.Brush(reinsertFill), 8);
+                DrawText(drawing, "插入", row.ReinsertButton, 11, theme.Brush(theme.TextPrimary), Align.Center, true);
+            }
         }
 
-        DrawButton(drawing, theme, layout.ClearButton, "清空 / Clear", theme.Danger, Color.Parse("#FFFFFFFF"), string.Equals(pressed, "clear", StringComparison.Ordinal));
-        DrawButton(drawing, theme, layout.RefreshButton, "刷新 / Refresh", theme.SurfaceRaised, theme.TextPrimary, string.Equals(pressed, "refresh", StringComparison.Ordinal));
+        foreach (var button in layout.Footer)
+        {
+            var isDanger = button.Action is HistoryLayout.ActionClear or HistoryLayout.ActionDeleteAll or HistoryLayout.ActionDeleteSelected;
+            var isPrimary = button.Action == HistoryLayout.ActionDone;
+            var fill = isDanger ? theme.Danger : isPrimary ? theme.Accent : theme.SurfaceRaised;
+            var textColor = isDanger || isPrimary ? Color.Parse("#FFFFFFFF") : theme.TextPrimary;
+            DrawButton(drawing, theme, button.Rect, button.Label, fill, textColor, string.Equals(pressed, button.Action, StringComparison.Ordinal));
+        }
+
+        if (layout.RowMenu.Height > 0)
+        {
+            drawing.DrawRectangle(
+                theme.Brush(Color.Parse("#F01C1C1E")),
+                new Pen(theme.Brush(theme.SurfaceRaised), 1),
+                new RoundedRect(new Rect(layout.RowMenu.X, layout.RowMenu.Y, layout.RowMenu.Width, layout.RowMenu.Height), 12));
+            foreach (var button in layout.MenuButtons)
+            {
+                var isDanger = button.Action == HistoryLayout.ActionDeleteRow;
+                Panel(drawing, button.Rect, theme.Brush(isDanger ? theme.Danger : theme.SurfaceRaised), 8);
+                DrawText(
+                    drawing,
+                    button.Label,
+                    button.Rect,
+                    11.5,
+                    theme.Brush(isDanger ? Color.Parse("#FFFFFFFF") : theme.TextPrimary),
+                    Align.Left,
+                    true);
+            }
+        }
 
         if (ReadString(state, "hint") is { Length: > 0 } hint)
         {
             DrawText(
                 drawing,
                 hint,
-                new CRect(layout.Title.X, layout.ClearButton.Y - 16, layout.Title.Width, 14),
+                new CRect(layout.Title.X, layout.Footer[0].Rect.Y - 16, layout.Title.Width, 14),
                 10,
                 theme.Brush(theme.TextSecondary),
                 Align.Right);
@@ -272,55 +268,101 @@ public sealed class HistoryWidget : IWidgetRenderer
     public bool OnPointer(WidgetPointerContext context)
     {
         var size = context.LogicalSize;
-        var theme = context.Host.Theme;
         var state = context.Object.State ?? new JsonObject();
+        var id = context.Object.Id ?? string.Empty;
         var query = ReadString(state, "query");
         var selected = ReadInt(state, "selected", -1);
         var scroll = ReadInt(state, "scroll", 0);
         var showSearch = ReadBool(state, "showSearch");
+        var editMode = ReadBool(state, "editMode");
+        var menuIndex = ReadInt(state, "menuIndex", -1);
         var entries = _store.Search(query, 200);
-        var layout = HistoryLayout.Compute(size, entries.Count, showSearch, selected, scroll);
+        var layout = HistoryLayout.Compute(size, entries.Count, showSearch, selected, scroll, editMode, menuIndex);
 
         switch (context.Phase)
         {
             case WidgetPointerPhase.Down:
+            {
+                if (layout.RowMenu.Height > 0 && !layout.IsInRowMenu(context.Position))
                 {
-                    var action = Hit(layout, context.Position);
-                    if (action is null)
-                    {
-                        return false;
-                    }
-
-                    SetString(context.Object, "pressed", action);
+                    SetInt(context.Object, "menuIndex", -1);
                     context.Host.Invalidate();
                     return true;
                 }
+
+                var action = Hit(layout, context.Position);
+                if (action is null)
+                {
+                    return false;
+                }
+
+                SetString(context.Object, "pressed", action);
+                if (RowOf(action) is { } row)
+                {
+                    _pressRow[id] = row;
+                    _pressX[id] = context.Position.X;
+                    _pressAt[id] = Environment.TickCount64 / 1000.0;
+                }
+
+                context.Host.Invalidate();
+                return true;
+            }
 
             case WidgetPointerPhase.Up:
+            {
+                var action = ReadString(state, "pressed");
+                if (action is null)
                 {
-                    var action = ReadString(state, "pressed");
-                    if (action is null)
-                    {
-                        return false;
-                    }
-
-                    SetString(context.Object, "pressed", null);
-                    if (string.Equals(Hit(layout, context.Position), action, StringComparison.Ordinal))
-                    {
-                        Perform(context, entries, layout, action);
-                    }
-
-                    context.Host.Invalidate();
-                    return true;
+                    return false;
                 }
+
+                SetString(context.Object, "pressed", null);
+                var released = Hit(layout, context.Position);
+                var same = string.Equals(released, action, StringComparison.Ordinal);
+
+                if (_pressRow.TryGetValue(id, out var row))
+                {
+                    var dx = context.Position.X - (_pressX.TryGetValue(id, out var startedX) ? startedX : context.Position.X);
+                    var held = _pressAt.TryGetValue(id, out var startedAt) ? (Environment.TickCount64 / 1000.0) - startedAt : 0;
+                    _pressRow.Remove(id);
+                    _pressX.Remove(id);
+                    _pressAt.Remove(id);
+
+                    if (row >= 0 && row < entries.Count && Math.Abs(dx) >= SwipeThreshold)
+                    {
+                        _ = DeleteEntriesAsync(context, [entries[row]], "已滑动删除 / swiped away");
+                        return true;
+                    }
+
+                    if (row >= 0 && row < entries.Count && held >= LongPressSeconds)
+                    {
+                        SetInt(context.Object, "menuIndex", row);
+                        SetInt(context.Object, "selected", row);
+                        SetString(context.Object, "hint", null);
+                        context.Host.Invalidate();
+                        return true;
+                    }
+                }
+
+                if (same)
+                {
+                    Perform(context, entries, layout, action);
+                }
+
+                context.Host.Invalidate();
+                return true;
+            }
 
             case WidgetPointerPhase.Cancel:
                 SetString(context.Object, "pressed", null);
+                _pressRow.Remove(id);
+                _pressX.Remove(id);
+                _pressAt.Remove(id);
                 context.Host.Invalidate();
                 return true;
 
             case WidgetPointerPhase.Wheel:
-                if (entries.Count == 0)
+                if (layout.RowMenu.Height > 0 || entries.Count == 0)
                 {
                     return false;
                 }
@@ -359,8 +401,21 @@ public sealed class HistoryWidget : IWidgetRenderer
 
                 break;
             case "Escape" or "Clear":
-                SetString(context.Object, "query", string.Empty);
-                SetBool(context.Object, "showSearch", false);
+                if (ReadBool(state, "editMode"))
+                {
+                    SetBool(context.Object, "editMode", false);
+                    SetKeys(context.Object, []);
+                }
+                else if (ReadInt(state, "menuIndex", -1) >= 0)
+                {
+                    SetInt(context.Object, "menuIndex", -1);
+                }
+                else
+                {
+                    SetString(context.Object, "query", string.Empty);
+                    SetBool(context.Object, "showSearch", false);
+                }
+
                 break;
             case "Up":
                 SetInt(context.Object, "selected", Math.Max(0, selected - 1));
@@ -371,7 +426,14 @@ public sealed class HistoryWidget : IWidgetRenderer
             case "Return" or "Enter":
                 if (selected >= 0 && selected < entries.Count)
                 {
-                    _ = ReinsertAsync(context, entries[selected]);
+                    if (ReadBool(state, "editMode"))
+                    {
+                        ToggleChecked(context.Object, KeyOf(entries[selected]));
+                    }
+                    else
+                    {
+                        _ = RefillAsync(context, entries[selected]);
+                    }
                 }
                 else
                 {
@@ -398,47 +460,132 @@ public sealed class HistoryWidget : IWidgetRenderer
 
     private static string? Hit(HistoryLayout layout, CPoint point)
     {
-        if (layout.ClearButton.Contains(point))
+        if (layout.RowMenu.Height > 0 && layout.RowMenu.Contains(point))
         {
-            return "clear";
+            foreach (var button in layout.MenuButtons)
+            {
+                if (button.Rect.Contains(point))
+                {
+                    return $"menu:{button.Action}";
+                }
+            }
+
+            return "menu:";
         }
 
-        if (layout.RefreshButton.Contains(point))
+        if (layout.EditButton.Contains(point))
         {
-            return "refresh";
+            return HistoryLayout.ActionEdit;
+        }
+
+        if (layout.SearchToggle.Contains(point) || (layout.SearchField.Height > 1 && layout.SearchField.Contains(point)))
+        {
+            return HistoryLayout.ActionSearch;
+        }
+
+        foreach (var button in layout.Footer)
+        {
+            if (button.Rect.Contains(point))
+            {
+                return $"footer:{button.Action}";
+            }
         }
 
         foreach (var row in layout.Rows)
         {
-            if (row.ReinsertButton.Contains(point))
+            if (!layout.EditMode && row.ReinsertButton.Contains(point))
             {
                 return $"reinsert:{row.Index}";
             }
 
             if (row.Row.Contains(point))
             {
-                return $"row:{row.Index}";
+                return layout.EditMode ? $"check:{row.Index}" : $"row:{row.Index}";
             }
         }
 
-        return layout.SearchField.Height > 1 && layout.SearchField.Contains(point) || layout.SearchToggle.Contains(point)
-            ? "search"
-            : null;
+        return null;
     }
 
     private void Perform(WidgetPointerContext context, IReadOnlyList<HistoryEntry> entries, HistoryLayout layout, string action)
     {
-        if (action.StartsWith("row:", StringComparison.Ordinal) && int.TryParse(action[4..], out var rowIndex))
+        if (RowOf(action) is { } rowIndex && rowIndex >= 0 && rowIndex < entries.Count)
         {
+            if (action.StartsWith("check:", StringComparison.Ordinal))
+            {
+                ToggleChecked(context.Object, KeyOf(entries[rowIndex]));
+                SetInt(context.Object, "selected", rowIndex);
+                return;
+            }
+
+            if (action.StartsWith("reinsert:", StringComparison.Ordinal))
+            {
+                _ = ReinsertAsync(context, entries[rowIndex]);
+                return;
+            }
+
+            // A plain tap sends the calculation back to the calculator, like tapping a history row
+            // on the iPad reopens it in the calculator.
             SetInt(context.Object, "selected", rowIndex);
+            _ = RefillAsync(context, entries[rowIndex]);
             return;
         }
 
-        if (action.StartsWith("reinsert:", StringComparison.Ordinal) && int.TryParse(action[9..], out var reinsertIndex))
+        if (action.StartsWith("menu:", StringComparison.Ordinal))
         {
-            if (reinsertIndex >= 0 && reinsertIndex < entries.Count)
+            var menuAction = action.Length > 5 ? action[5..] : string.Empty;
+            var menuIndex = ReadInt(context.Object.State, "menuIndex", -1);
+            var entry = menuIndex >= 0 && menuIndex < entries.Count ? entries[menuIndex] : null;
+            switch (menuAction)
             {
-                _ = ReinsertAsync(context, entries[reinsertIndex]);
+                case HistoryLayout.ActionCopyExpression:
+                    if (entry is not null)
+                    {
+                        _ = CopyAsync(context, entry.Expression);
+                    }
+
+                    break;
+                case HistoryLayout.ActionCopyResult:
+                    if (entry is not null)
+                    {
+                        _ = CopyAsync(context, entry.IsError ? entry.Error ?? string.Empty : entry.Result);
+                    }
+
+                    break;
+                case HistoryLayout.ActionDeleteRow:
+                    SetInt(context.Object, "menuIndex", -1);
+                    if (entry is not null)
+                    {
+                        _ = DeleteEntriesAsync(context, [entry], "已删除 1 条 / deleted 1");
+                    }
+
+                    break;
+                default:
+                    SetInt(context.Object, "menuIndex", -1);
+                    break;
+            }
+
+            return;
+        }
+
+        if (action.StartsWith("footer:", StringComparison.Ordinal))
+        {
+            switch (action[7..])
+            {
+                case HistoryLayout.ActionRefresh:
+                    _ = RefreshAsync(context.Host);
+                    break;
+                case HistoryLayout.ActionClear:
+                case HistoryLayout.ActionDeleteAll:
+                    _ = ConfirmAndClearAsync(context);
+                    break;
+                case HistoryLayout.ActionDeleteSelected:
+                    _ = DeleteSelectedAsync(context, entries);
+                    break;
+                case HistoryLayout.ActionDone:
+                    SetBool(context.Object, "editMode", false);
+                    SetKeys(context.Object, []);
+                    break;
             }
 
             return;
@@ -446,18 +593,176 @@ public sealed class HistoryWidget : IWidgetRenderer
 
         switch (action)
         {
-            case "search":
+            case HistoryLayout.ActionSearch:
                 SetBool(context.Object, "showSearch", !ReadBool(context.Object.State, "showSearch"));
                 break;
-            case "refresh":
-                _ = RefreshAsync(context.Host);
-                break;
-            case "clear":
-                _ = ConfirmAndClearAsync(context);
+            case HistoryLayout.ActionEdit:
+                var editMode = !ReadBool(context.Object.State, "editMode");
+                SetBool(context.Object, "editMode", editMode);
+                SetKeys(context.Object, []);
+                SetInt(context.Object, "menuIndex", -1);
                 break;
         }
 
         _ = layout;
+    }
+
+    /// <summary>Reads the row index out of a row, check or reinsert action, or null.</summary>
+    private static int? RowOf(string action)
+    {
+        foreach (var prefix in Prefixes)
+        {
+            if (action.StartsWith(prefix, StringComparison.Ordinal) &&
+                int.TryParse(action[prefix.Length..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var index))
+            {
+                return index;
+            }
+        }
+
+        return null;
+    }
+
+    private static readonly string[] Prefixes = ["row:", "check:", "reinsert:"];
+
+    /// <summary>Horizontal travel that counts as a swipe, in logical units.</summary>
+    public const double SwipeThreshold = 40;
+
+    /// <summary>Hold time that opens the row menu instead of refilling the calculator.</summary>
+    public const double LongPressSeconds = 0.5;
+
+    /// <summary>Stable identity of an entry, used by the multi select checkboxes.</summary>
+    internal static string KeyOf(HistoryEntry entry) => HistoryStore.KeyOf(entry);
+
+    private static HashSet<string> ReadKeys(JsonObject? state, string key)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        if (state is not null && state.TryGetPropertyValue(key, out var node) && node is JsonArray array)
+        {
+            foreach (var item in array)
+            {
+                if (item?.ToString() is { Length: > 0 } text)
+                {
+                    set.Add(text);
+                }
+            }
+        }
+
+        return set;
+    }
+
+    private static void SetKeys(WidgetObject target, IEnumerable<string> keys)
+    {
+        target.State ??= new JsonObject();
+        var array = new JsonArray();
+        foreach (var key in keys)
+        {
+            array.Add(key);
+        }
+
+        target.State["checked"] = array;
+    }
+
+    private static void ToggleChecked(WidgetObject target, string key)
+    {
+        var state = target.State ??= new JsonObject();
+        var keys = ReadKeys(state, "checked");
+        if (!keys.Add(key))
+        {
+            keys.Remove(key);
+        }
+
+        SetKeys(target, keys);
+    }
+
+    /// <summary>Copies text through the plugin's permission gated clipboard channel.</summary>
+    private async Task CopyAsync(WidgetPointerContext context, string text)
+    {
+        var outcome = Clipboard is null
+            ? ClipboardOutcome.Unavailable
+            : await Clipboard(text, CancellationToken.None).ConfigureAwait(true);
+        SetString(context.Object, "hint", CalculatorClipboard.Describe(outcome));
+        SetInt(context.Object, "menuIndex", -1);
+        context.Host.Invalidate();
+    }
+
+    /// <summary>Deletes a set of entries, from the cache and from the database.</summary>
+    private async Task DeleteEntriesAsync(WidgetPointerContext context, IReadOnlyList<HistoryEntry> entries, string message)
+    {
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await _store.RemoveAsync(entries).ConfigureAwait(true);
+            SetInt(context.Object, "selected", -1);
+            SetInt(context.Object, "menuIndex", -1);
+            SetInt(context.Object, "scroll", 0);
+            SetKeys(context.Object, []);
+            SetString(context.Object, "hint", message);
+            await context.Host.Host.DispatchAsync(context.Host.Invalidate).ConfigureAwait(true);
+        }
+        catch (Exception)
+        {
+            SetString(context.Object, "hint", "删除失败 / delete failed");
+            context.Host.Invalidate();
+        }
+    }
+
+    private async Task DeleteSelectedAsync(WidgetPointerContext context, IReadOnlyList<HistoryEntry> entries)
+    {
+        var keys = ReadKeys(context.Object.State, "checked");
+        if (keys.Count == 0)
+        {
+            SetString(context.Object, "hint", "未选择 / nothing selected");
+            context.Host.Invalidate();
+            return;
+        }
+
+        var victims = entries.Where(e => keys.Contains(KeyOf(e))).ToList();
+        await DeleteEntriesAsync(context, victims, $"已删除 {victims.Count} 条 / deleted {victims.Count}").ConfigureAwait(true);
+    }
+
+    /// <summary>Sends an entry back to the calculator through the cross plugin refill command.</summary>
+    private async Task RefillAsync(WidgetPointerContext context, HistoryEntry entry)
+    {
+        try
+        {
+            var arguments = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [CalculatorCommands.ExpressionArgument] = entry.Expression,
+                [CalculatorCommands.ResultArgument] = entry.Result ?? string.Empty
+            };
+            await context.Host.InvokeCommandAsync(RefillCommandId, arguments).ConfigureAwait(true);
+            SetString(context.Object, "hint", "已回填到计算器 / sent to calculator");
+        }
+        catch (Exception)
+        {
+            SetString(context.Object, "hint", "回填失败 / refill failed");
+        }
+
+        context.Host.Invalidate();
+    }
+
+    private async Task RefillAsync(WidgetKeyContext context, HistoryEntry entry)
+    {
+        try
+        {
+            var arguments = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [CalculatorCommands.ExpressionArgument] = entry.Expression,
+                [CalculatorCommands.ResultArgument] = entry.Result ?? string.Empty
+            };
+            await context.Host.InvokeCommandAsync(RefillCommandId, arguments).ConfigureAwait(true);
+            SetString(context.Object, "hint", "已回填到计算器 / sent to calculator");
+        }
+        catch (Exception)
+        {
+            SetString(context.Object, "hint", "回填失败 / refill failed");
+        }
+
+        context.Host.Invalidate();
     }
 
     private async Task RefreshAsync(IWidgetHost host)

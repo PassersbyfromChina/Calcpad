@@ -115,6 +115,33 @@ public sealed class AppHostApi : IHostApi
         }
     }
 
+    /// <summary>
+    /// Bound by the composition root once the plugin host exists. Commands are late bound because
+    /// the host is built after this object and consumes it while being constructed.
+    /// </summary>
+    public IPluginHostRuntime? Commands { get; set; }
+
+    public ValueTask<bool> ExecuteCommandAsync(string commandId, IReadOnlyDictionary<string, string>? arguments = null, CancellationToken ct = default)
+    {
+        var host = Commands;
+        if (host is null || string.IsNullOrWhiteSpace(commandId))
+        {
+            return ValueTask.FromResult(false);
+        }
+
+        var context = new CommandContext
+        {
+            CommandId = commandId,
+            Trigger = "plugin",
+            Arguments = arguments ?? new Dictionary<string, string>()
+        };
+
+        return host.ExecuteCommandAsync(commandId, context, ct);
+    }
+
+    public ValueTask<bool> HasCommandAsync(string commandId, CancellationToken ct = default) =>
+        ValueTask.FromResult(Commands?.OwnerOfCommand(commandId) is not null);
+
     /// <summary>Builds the info record once the real paths are known.</summary>
     public static AppInfo BuildInfo(AppPaths paths)
     {

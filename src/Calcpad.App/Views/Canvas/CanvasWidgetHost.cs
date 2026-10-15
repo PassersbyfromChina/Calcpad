@@ -11,11 +11,13 @@ namespace Calcpad.App.Views.Canvas;
 internal sealed class CanvasWidgetHost : IWidgetHost
 {
     private readonly InfiniteCanvasView _view;
+    private readonly ICanvasEngine _engine;
     private readonly IHostApi _host;
 
     internal CanvasWidgetHost(InfiniteCanvasView view, ICanvasEngine engine, IHostApi host, string pluginId, IPluginSettings settings)
     {
         _view = view ?? throw new ArgumentNullException(nameof(view));
+        _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _host = host ?? throw new ArgumentNullException(nameof(host));
         PluginId = pluginId;
         Canvas = engine.ApiFor(pluginId);
@@ -51,20 +53,20 @@ internal sealed class CanvasWidgetHost : IWidgetHost
             return;
         }
 
-        if (_host is not IPluginHostRuntime runtime)
-        {
-            return;
-        }
-
         try
         {
-            var context = new CommandContext
+            var executed = await _host.ExecuteCommandAsync(commandId, arguments, ct).ConfigureAwait(true);
+            if (executed)
             {
-                CommandId = commandId,
-                Trigger = "widget",
-                Arguments = arguments ?? new Dictionary<string, string>()
-            };
-            await runtime.ExecuteCommandAsync(commandId, context, ct).ConfigureAwait(true);
+                return;
+            }
+
+            // Late bind the diagnostic: either no plugin contributes the command, or it exists and
+            // refused to run. Neither may be swallowed silently.
+            var known = await _host.HasCommandAsync(commandId, ct).ConfigureAwait(true);
+            Warn(known
+                ? $"Widget command '{commandId}' is contributed but was not executed by the shell."
+                : $"Widget command '{commandId}' is not contributed by any enabled plugin.");
         }
         catch (OperationCanceledException)
         {
@@ -72,12 +74,33 @@ internal sealed class CanvasWidgetHost : IWidgetHost
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Widget command '{commandId}' failed: {ex}");
+            Warn($"Widget command '{commandId}' failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
+    private static void Warn(string message) => System.Diagnostics.Debug.WriteLine($"[CanvasWidgetHost] {message}");
+
     /// <inheritdoc />
     public void Invalidate() => _view.Invalidate();
+
+    /// <inheritdoc />
+    public IWidgetHost? ForPlugin(string pluginId)
+    {
+        if (string.IsNullOrWhiteSpace(pluginId))
+        {
+            return null;
+        }
+
+        if (string.Equals(pluginId, PluginId, StringComparison.Ordinal))
+        {
+            return this;
+        }
+
+        // A host carrying the requested plugin's own identity, so an embedded surface keeps its own
+        // permission checked canvas API and its own settings partition.
+        var settings = _view.SettingsProvider?.Invoke(pluginId) ?? new InMemoryPluginSettings();
+        return new CanvasWidgetHost(_view, _engine, _host, pluginId, settings);
+    }
 
     /// <inheritdoc />
     public void RequestFocus(string? focusKey)

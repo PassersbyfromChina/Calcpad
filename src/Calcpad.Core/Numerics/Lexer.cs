@@ -50,7 +50,7 @@ internal enum TokenKind
 }
 
 /// <summary>One lexical token with its source position.</summary>
-internal readonly record struct Token(TokenKind Kind, string Text, double Number, int Position)
+internal readonly record struct Token(TokenKind Kind, string Text, double Number, int Position, int Length = 0)
 {
     /// <summary>True when the token is the operator <paramref name="text"/>.</summary>
     public bool IsOperator(string text) =>
@@ -170,17 +170,30 @@ internal static class Lexer
                     tokens.Add(new Token(TokenKind.Convert, "to", 0, index++));
                     continue;
                 case 'π':
-                    tokens.Add(new Token(TokenKind.Identifier, "π", 0, index++));
+                    tokens.Add(new Token(TokenKind.Identifier, "π", 0, index++, 1));
+                    continue;
+                case '&':
+                case '|':
+                    tokens.Add(new Token(TokenKind.Operator, c.ToString(), 0, index++, 1));
+                    continue;
+                case '$':
+                case '€':
+                case '£':
+                case '¥':
+                case '₩':
+                case '₹':
+                    // Currency prefix symbols behave like a unit name written before the number.
+                    tokens.Add(new Token(TokenKind.Identifier, c.ToString(), 0, index++, 1));
                     continue;
                 case '\'':
                 case '"':
                     // Straight quotes typed for arcminutes / arcseconds.
-                    tokens.Add(new Token(TokenKind.Identifier, c == '\'' ? "′" : "″", 0, index++));
+                    tokens.Add(new Token(TokenKind.Identifier, c == '\'' ? "′" : "″", 0, index++, 1));
                     continue;
                 default:
                     if (IsIdentifierStart(c))
                     {
-                        tokens.Add(ReadIdentifier(expression, ref index));
+                        tokens.Add(ReadIdentifier(expression, ref index, tokens));
                         continue;
                     }
 
@@ -289,7 +302,7 @@ internal static class Lexer
             throw new CalcException(Errors.Overflow(string.Empty));
         }
 
-        return new Token(TokenKind.Number, literal, value, start);
+        return new Token(TokenKind.Number, literal, value, start, index - start);
     }
 
     private static bool IsThreeDigitGroup(string text, int index)
@@ -311,7 +324,7 @@ internal static class Lexer
         return after >= text.Length || !char.IsDigit(text[after]);
     }
 
-    private static Token ReadIdentifier(string text, ref int index)
+    private static Token ReadIdentifier(string text, ref int index, List<Token> tokens)
     {
         var start = index;
         var builder = new StringBuilder();
@@ -334,11 +347,66 @@ internal static class Lexer
         }
 
         var name = builder.ToString();
+        var length = index - start;
         if (string.Equals(name, "to", StringComparison.OrdinalIgnoreCase) || name == "转")
         {
-            return new Token(TokenKind.Convert, "to", 0, start);
+            return new Token(TokenKind.Convert, "to", 0, start, length);
         }
 
-        return new Token(TokenKind.Identifier, name, 0, start);
+        // "per" is the spoken form of division: "miles per gallon".
+        if (string.Equals(name, "per", StringComparison.OrdinalIgnoreCase))
+        {
+            return new Token(TokenKind.Operator, "/", 0, start, length);
+        }
+
+        // "1 percent" is the spoken form of the percent postfix.
+        if (string.Equals(name, "percent", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "percentage", StringComparison.OrdinalIgnoreCase))
+        {
+            return new Token(TokenKind.Operator, "%", 0, start, length);
+        }
+
+        if (string.Equals(name, "in", StringComparison.OrdinalIgnoreCase) && FollowsUnit(tokens, text, index))
+        {
+            // "4h in seconds" converts; a bare "4 in" stays inches.
+            return new Token(TokenKind.Convert, "to", 0, start, length);
+        }
+
+        return new Token(TokenKind.Identifier, name, 0, start, length);
+    }
+
+    /// <summary>
+    /// True when the word <c>in</c> is a conversion keyword: it must follow a unit (or a currency
+    /// amount such as <c>$100</c>) and be followed by another unit name.
+    /// </summary>
+    private static bool FollowsUnit(List<Token> tokens, string text, int index)
+    {
+        if (tokens.Count == 0)
+        {
+            return false;
+        }
+
+        var previous = tokens[^1];
+        var hasUnitContext = previous.Kind switch
+        {
+            TokenKind.Identifier => UnitCatalog.FindUnit(previous.Text) is not null,
+            TokenKind.Number => tokens.Count >= 2
+                && tokens[^2].Kind == TokenKind.Identifier
+                && UnitCatalog.FindUnit(tokens[^2].Text) is not null,
+            _ => false
+        };
+
+        if (!hasUnitContext)
+        {
+            return false;
+        }
+
+        var next = index;
+        while (next < text.Length && char.IsWhiteSpace(text[next]))
+        {
+            next++;
+        }
+
+        return next < text.Length && (IsIdentifierStart(text[next]) || text[next] is '$' or '€' or '£' or '¥');
     }
 }

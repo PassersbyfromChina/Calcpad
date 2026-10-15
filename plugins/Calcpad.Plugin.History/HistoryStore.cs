@@ -1,3 +1,4 @@
+using System.Globalization;
 using Calcpad.Core.Data;
 
 namespace Calcpad.Plugin.History;
@@ -9,7 +10,8 @@ namespace Calcpad.Plugin.History;
 /// <param name="Result">Formatted result, or an empty string when the calculation failed.</param>
 /// <param name="Error">Readable error message when the calculation failed.</param>
 /// <param name="At">When the calculation happened.</param>
-public sealed record HistoryEntry(string Expression, string Result, string? Error, DateTimeOffset At)
+/// <param name="Id">Stable identity used by the multi select checkboxes; older records may omit it.</param>
+public sealed record HistoryEntry(string Expression, string Result, string? Error, DateTimeOffset At, string? Id = null)
 {
     /// <summary>True when this entry records a failure.</summary>
     public bool IsError => !string.IsNullOrEmpty(Error);
@@ -94,7 +96,56 @@ public sealed class HistoryStore
 
     /// <summary>Appends a calculation from its expression and result text.</summary>
     public Task AppendAsync(string expression, string result, string? error = null, CancellationToken ct = default) =>
-        AppendAsync(new HistoryEntry(expression ?? string.Empty, result ?? string.Empty, error, DateTimeOffset.UtcNow), ct);
+        AppendAsync(
+            new HistoryEntry(
+                expression ?? string.Empty,
+                result ?? string.Empty,
+                error,
+                DateTimeOffset.UtcNow,
+                Guid.NewGuid().ToString("n")),
+            ct);
+
+    /// <summary>Stable identity of an entry; records written before ids existed fall back to the timestamp.</summary>
+    public static string KeyOf(HistoryEntry entry) =>
+        string.IsNullOrEmpty(entry.Id) ? entry.At.UtcTicks.ToString(CultureInfo.InvariantCulture) : entry.Id;
+
+    /// <summary>
+    /// Removes entries from the cache and from the database. The plugin partition is append only, so
+    /// the survivors are written back in order; the entries themselves are never guessed at.
+    /// </summary>
+    public async Task<int> RemoveAsync(IEnumerable<HistoryEntry> entries, CancellationToken ct = default)
+    {
+        var victims = entries?.ToList() ?? [];
+        if (victims.Count == 0)
+        {
+            return 0;
+        }
+
+        var keys = new HashSet<string>(victims.Select(KeyOf), StringComparer.Ordinal);
+        int removed;
+        lock (_gate)
+        {
+            removed = _cache.RemoveAll(e => keys.Contains(KeyOf(e)));
+        }
+
+        if (removed == 0)
+        {
+            return 0;
+        }
+
+        if (_data is not null)
+        {
+            await _data.ClearAsync(Collection, ct).ConfigureAwait(false);
+            var survivors = Cached;
+            for (var i = survivors.Count - 1; i >= 0; i--)
+            {
+                await _data.AppendAsync(Collection, survivors[i], KeepLast, ct).ConfigureAwait(false);
+            }
+        }
+
+        RaiseChanged();
+        return removed;
+    }
 
     /// <summary>Removes every entry, from the cache and from the database.</summary>
     public async Task ClearAsync(CancellationToken ct = default)

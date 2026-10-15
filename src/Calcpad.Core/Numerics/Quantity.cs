@@ -107,7 +107,20 @@ public readonly struct Quantity : IEquatable<Quantity>
     public string Format(int precision)
     {
         var text = NumberFormatter.Format(Value, precision);
-        return IsDimensionless ? text : $"{text} {Unit.Symbol}";
+        if (IsDimensionless)
+        {
+            return text;
+        }
+
+        if (!Unit.PrefixSymbol)
+        {
+            return $"{text} {Unit.Symbol}";
+        }
+
+        // Currencies are written before the number: $27, and -$5 for negative amounts.
+        return text.StartsWith("-", StringComparison.Ordinal)
+            ? $"-{Unit.Symbol}{text[1..]}"
+            : $"{Unit.Symbol}{text}";
     }
 
     /// <inheritdoc />
@@ -326,8 +339,23 @@ public static class UnitCatalog
             Unit("mhz", "Megahertz", "兆赫兹", "MHz", 1e6),
             Unit("ghz", "Gigahertz", "吉赫兹", "GHz", 1e9),
             Unit("rpm", "Revolution per minute", "转每分钟", "rpm", 1d / 60),
-            Unit("fps_hz", "Frame per second", "帧每秒", "FPS", 1))
+            Unit("fps_hz", "Frame per second", "帧每秒", "FPS", 1)),
+        CurrencyCategory()
     ];
+
+    private static UnitCategory CurrencyCategory() => Category(
+        "currency",
+        "Currency",
+        "货币",
+        // Factor is "how many base units one of this unit is worth": one yen is 1/157 of a dollar.
+        [.. CurrencyRates.All.Select(c => Unit(c.Id, c.Name, c.NameZh, c.Symbol, 1.0 / c.PerUsd))]);
+
+    /// <summary>True when the unit belongs to the currency category.</summary>
+    public static bool IsCurrency(UnitInfo unit) => CurrencyRates.Find(unit.Symbol) is not null;
+
+    /// <summary>True when a category writes its symbol before the number (currencies).</summary>
+    public static bool UsesPrefixSymbol(string categoryId) =>
+        string.Equals(categoryId, "currency", StringComparison.OrdinalIgnoreCase);
 
     private static readonly Dictionary<string, UnitCategory> ById =
         AllCategories.ToDictionary(c => c.Id, StringComparer.OrdinalIgnoreCase);
@@ -347,7 +375,8 @@ public static class UnitCatalog
         ["data"] = Dimension.OfData,
         ["angle"] = Dimension.OfAngle,
         ["force"] = new Dimension(1, 1, -2, 0, 0, 0),
-        ["frequency"] = Dimension.OfTime.Scale(-1)
+        ["frequency"] = Dimension.OfTime.Scale(-1),
+        ["currency"] = Dimension.OfCurrency
     };
 
     /// <summary>Every category the converter and the evaluator know about.</summary>
@@ -368,13 +397,15 @@ public static class UnitCatalog
             return null;
         }
 
-        var trimmed = token.Trim();
-        foreach (var category in AllCategories)
+        foreach (var candidate in Candidates(token))
         {
-            var unit = category.Find(trimmed);
-            if (unit is not null)
+            foreach (var category in AllCategories)
             {
-                return unit;
+                var unit = category.Find(candidate);
+                if (unit is not null)
+                {
+                    return unit;
+                }
             }
         }
 
@@ -389,17 +420,39 @@ public static class UnitCatalog
             return null;
         }
 
-        var trimmed = token.Trim();
-        foreach (var category in AllCategories)
+        foreach (var candidate in Candidates(token))
         {
-            var unit = category.Find(trimmed);
-            if (unit is not null)
+            foreach (var category in AllCategories)
             {
-                return (category, unit);
+                var unit = category.Find(candidate);
+                if (unit is not null)
+                {
+                    return (category, unit);
+                }
             }
         }
 
         return null;
+    }
+
+    /// <summary>The exact token first, then its singular form, so plurals resolve.</summary>
+    private static IEnumerable<string> Candidates(string token)
+    {
+        var trimmed = token.Trim();
+        yield return trimmed;
+        var singular = Singularize(trimmed);
+        if (!string.Equals(singular, trimmed, StringComparison.OrdinalIgnoreCase) && singular.Length > 0)
+        {
+            yield return singular;
+        }
+
+        var stripped = StripEs(trimmed);
+        if (!string.Equals(stripped, trimmed, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(stripped, singular, StringComparison.OrdinalIgnoreCase)
+            && stripped.Length > 0)
+        {
+            yield return stripped;
+        }
     }
 
     /// <summary>The physical dimension every unit of a category shares.</summary>
@@ -421,7 +474,57 @@ public static class UnitCatalog
     }
 
     /// <summary>Builds the unit expression of a catalogue unit.</summary>
-    public static UnitExpr ToExpression(UnitInfo unit) => UnitExpr.FromUnit(unit, DimensionOf(unit));
+    public static UnitExpr ToExpression(UnitInfo unit) =>
+        UnitExpr.FromUnit(unit, DimensionOf(unit), CurrencyRates.Find(unit.Symbol) is not null);
+
+    /// <summary>
+    /// Strips a plural ending so that <c>miles</c>, <c>kilograms</c>, <c>inches</c> and
+    /// <c>seconds</c> resolve to their singular catalogue entries.
+    /// </summary>
+    public static string Singularize(string token)
+    {
+        var text = token.Trim();
+        if (text.Length < 3)
+        {
+            return text;
+        }
+
+        foreach (var (plural, singular) in Aliases)
+        {
+            if (string.Equals(text, plural, StringComparison.OrdinalIgnoreCase))
+            {
+                return singular;
+            }
+        }
+
+        // "miles" -> "mile" (strip the s first: stripping "es" would give "mil").
+        return text.EndsWith('s') || text.EndsWith('S') ? text[..^1] : text;
+    }
+
+    /// <summary>Strips "es" as a second chance, so "inches" reaches "inch".</summary>
+    private static string StripEs(string token) =>
+        token.EndsWith("es", StringComparison.OrdinalIgnoreCase) && token.Length > 4
+            ? token[..^2]
+            : token;
+
+    private static readonly (string Plural, string Singular)[] Aliases =
+    [
+        ("feet", "ft"),
+        ("foot", "ft"),
+        ("inch", "in"),
+        ("sec", "s"),
+        ("secs", "s"),
+        ("hr", "h"),
+        ("hrs", "h"),
+        ("kph", "kmh"),
+        ("metres", "m"),
+        ("meters", "m"),
+        ("litres", "l"),
+        ("liters", "l"),
+        ("grammes", "g"),
+        ("degrees", "deg"),
+        ("radians", "rad")
+    ];
 
     /// <summary>Every unit symbol, name and id, for completion and handwriting correction.</summary>
     public static IReadOnlyList<string> AllNames()

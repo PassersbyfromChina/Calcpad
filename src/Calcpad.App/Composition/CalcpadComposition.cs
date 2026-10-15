@@ -76,7 +76,8 @@ public static class CalcpadComposition
             pluginId => loggers.Create(pluginId));
 
         var ui = new UiRegistry(canvasEngine, hostApi, pluginId => settingsFactory.Create(pluginId));
-        var contexts = new AppPluginContextFactory(coreContexts, ui);
+        var shellClipboard = new AvaloniaShellClipboard(AvaloniaShellClipboard.ResolveTopLevel);
+        var contexts = new AppPluginContextFactory(coreContexts, ui, shellClipboard, permissions);
 
         var pluginHost = new PluginHost(
             BuiltInPlugins.Create(),
@@ -86,6 +87,7 @@ public static class CalcpadComposition
             new SqlitePluginStateStore(hostStore));
 
         ui.Plugins = pluginHost;
+        hostApi.Commands = pluginHost;
 
         // The context factory is decorated by the shell, so the host cannot discover the broker on
         // its own; without this the plugin manager would show every plugin as holding nothing.

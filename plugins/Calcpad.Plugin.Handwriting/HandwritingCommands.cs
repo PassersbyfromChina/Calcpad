@@ -18,6 +18,15 @@ public static class HandwritingCommands
     /// <summary>Accept the pending recognition result and write it back.</summary>
     public const string AcceptResult = "handwriting.accept";
 
+    /// <summary>Solve the handwriting under the selection (iPadOS style Solve).</summary>
+    public const string Solve = "handwriting.solve";
+
+    /// <summary>Delete the answer the plugin rendered (never the ink).</summary>
+    public const string DeleteSolveResult = "handwriting.solve.delete";
+
+    /// <summary>Hand a number of the solved line to the math notes slider.</summary>
+    public const string AdjustSolveNumber = "handwriting.solve.adjust";
+
     /// <summary>Undo the last write back.</summary>
     public const string UndoResult = "handwriting.undo";
 

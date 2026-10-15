@@ -704,6 +704,16 @@ public sealed class PluginHost : IPluginHostRuntime
         {
             yield return widget.CommandId;
         }
+
+        // Commands that exist purely for other plugins to call. They have no UI contribution, so
+        // without this loop the host would never learn who owns them and dispatch would fail.
+        foreach (var commandId in manifest.Commands)
+        {
+            if (!string.IsNullOrWhiteSpace(commandId))
+            {
+                yield return commandId;
+            }
+        }
     }
 
     private static string FirstNonEmpty(string? preferred, string? fallback, string last) =>
